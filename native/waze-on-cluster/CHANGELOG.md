@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.19.1
+
 Cluster fullscreen, off by default: a new map setting (`fullscreen`,
 saved by the app like the others) moves the cluster map from its central
 map slot over the whole 1920x720 cluster. The gauges are covered while it
