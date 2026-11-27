@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Cluster fullscreen, a checkbox under Show on, unticked by default: the
+cluster map over the whole cluster instead of the central map area. The
+gauges are covered while it is on, so use it parked or where you do not
+need them; the warning lights stay visible. The tick appears once the map
+actually covers the cluster, and the checkbox is greyed while the map is
+off the cluster or the installed tool is an older one. Saved per driver
+profile. Requires the next waze-on-cluster.
+
 ## 0.6.18
 
 The Status rows say Not supported only where the patch cannot be applied,

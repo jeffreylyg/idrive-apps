@@ -105,10 +105,12 @@ void MapFeed::make_layer()
     part_ = OutputPart();
     uint32_t tw = 0, th = 0;
     if (!target_size(client_.targets, cfg_.target, &tw, &th)) {
+        target_absent_ = true;
         refused_ = "the cluster renderer has no target " + cfg_.target;
         log_error("render: %s", refused_.c_str());
         return;
     }
+    target_absent_ = false;
     show_due_ = false;
     refused_.clear();
     layer_state_ = "stalled";
@@ -265,9 +267,21 @@ void MapFeed::remake_layer()
 /* Where the map goes on a target of tw x th: the kit's fitted rect, or on
  * the HUD with a size set, that width (the picture's shape kept, at most the
  * HUD's height), centred; on the HUD then moved by the offset, held inside
- * the scene. */
+ * the scene. On `panel` (fullscreen) the whole scene, or the picture's shape
+ * fitted to its height, centred; the KOMBI's GPU scales it either way. */
 crk::QuadRect MapFeed::quad(uint32_t tw, uint32_t th) const
 {
+    if (cfg_.target == "panel" && cfg_.video.w && cfg_.video.h) {
+        if (cfg_.fullscreen_stretch)
+            return crk::QuadRect{0, 0, tw, th};
+        uint64_t w = ((uint64_t)th * cfg_.video.w + cfg_.video.h / 2) / cfg_.video.h;
+        uint64_t h = th;
+        if (w > tw) {   /* a picture wider than the scene: fitted to its width */
+            w = tw;
+            h = ((uint64_t)tw * cfg_.video.h + cfg_.video.w / 2) / cfg_.video.w;
+        }
+        return crk::QuadRect{(uint32_t)((tw - w) / 2), (uint32_t)((th - h) / 2), (uint32_t)w, (uint32_t)h};
+    }
     if (cfg_.target != "hud" || !cfg_.video.w || !cfg_.video.h)
         return crk::map_quad(tw, th, cfg_.video.w, cfg_.video.h);
     crk::QuadRect q;

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+Cluster fullscreen, off by default: a new map setting (`fullscreen`,
+saved by the app like the others) moves the cluster map from its central
+map slot over the whole 1920x720 cluster. The gauges are covered while it
+is on; the telltales stay on top. The picture keeps its shape, fitted to
+the cluster's height and centred, or covers all of it with
+`fullscreen_stretch = 1` in the configuration. A cluster renderer without
+the whole-cluster target keeps the map in its slot. While fullscreen, a
+theme hosting the map is ignored, and whether BMW's turn box draws over
+the map is unverified.
+
 ## 0.14.19
 
 A car whose cluster coding cannot be read is patched as a car coded 7,

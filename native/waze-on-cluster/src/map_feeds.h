@@ -30,7 +30,18 @@
  *
  * The app's status is the cluster's (state off while it is off), with the
  * HUD's own state beside it (FeedStatus::hud_state): off, disabled as
- * cluster-render reports it, or its feed's state. */
+ * cluster-render reports it, or its feed's state.
+ *
+ * Fullscreen: the cluster's feed on the renderer's whole-cluster `panel`
+ * target (1920x720, opaque: the gauges are covered) instead of `map`. A
+ * switch makes the new feed first, started from the newest picture, then
+ * drops the old one, so the map never goes blank beyond the panel scene's
+ * one-time load. The status's fullscreen is achieved, 1 only while the
+ * cluster's feed is on the panel: a renderer whose hello has no panel
+ * keeps the map in its slot (one warning, the saved setting untouched).
+ * While fullscreen, a theme hosting the `map` target is ignored (host
+ * events name the target), and BMW's turn box does not follow the panel
+ * (cluster-render holds the map slot only). */
 #ifndef WOC_MAP_FEEDS_H
 #define WOC_MAP_FEEDS_H
 
@@ -48,12 +59,16 @@ namespace woc {
 class MapFeeds {
 public:
     /* base: the cluster's feed; cluster, hud: each on from the start, the
-     * HUD at hud_fps frames a second at most. */
-    MapFeeds(const FeedConfig &base, bool cluster, bool hud, unsigned hud_fps);
+     * HUD at hud_fps frames a second at most; fullscreen: the cluster's
+     * feed on `panel` from the start (the header's "Fullscreen"). */
+    MapFeeds(const FeedConfig &base, bool cluster, bool hud, unsigned hud_fps, bool fullscreen = false);
 
     /* The cluster and the HUD on or off, each at once. */
     void set_cluster(bool on);
     void set_hud(bool on);
+    /* The cluster map over the whole cluster or in its map slot, at once
+     * (the header's "Fullscreen"); kept for a cluster feed made later. */
+    void set_fullscreen(bool on);
     /* A feed takes frames: the cluster's, or the HUD's with its layer made
      * and not disabled. */
     bool wants_frames() const;
@@ -111,10 +126,14 @@ private:
     void follow();
     /* The HUD's copy of the newest picture, when it is due. */
     void feed_hud(int64_t now_ms);
+    /* The cluster feed's config: base_, on `panel` while fullscreen
+     * (map_rect is the map slot's). */
+    FeedConfig cluster_config() const;
 
     FeedConfig base_;
     unsigned hud_fps_;
     bool cluster_on_, hud_on_;
+    bool fullscreen_;
     std::unique_ptr<MapFeed> cluster_, hud_;
     std::vector<uint8_t> copy_;   /* a picture on its way from one feed to the other */
     uint64_t id_ = 0;   /* the newest frame's */

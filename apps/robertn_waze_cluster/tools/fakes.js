@@ -145,6 +145,8 @@ class FakeRender extends LineServer {
         this.hudState = null;
         /* the HUD map kept shown over BMW's pop-ups (null: a tool without the field) */
         this.hudKeep = 0;
+        /* the cluster map over the whole cluster, achieved (null: a tool without it) */
+        this.fullscreen = 0;
         this._showTimer = null;
     }
 
@@ -170,6 +172,7 @@ class FakeRender extends LineServer {
             Object.assign(s, { cluster: this.cluster, hud: this.hud, hud_state: this.hud ? this.hudState || this.state : 'off',
                 hud_width_pct: this.hudWidth || 0, hud_x: this.hudX || 0, hud_y: this.hudY || 0 });
             if (this.hudKeep !== null) s.hud_keep_shown = this.hudKeep;
+            if (this.fullscreen !== null) s.fullscreen = this.cluster && this.fullscreen ? 1 : 0;
         }
         if (this.hide !== null) {
             s.hide_bmw_guidance = this.hide;
@@ -207,7 +210,11 @@ class FakeRender extends LineServer {
             this.cluster = Number(msg.on);
             if (!this.statusDelayMs) this._broadcast(this._status());
         }
-        if (msg.cmd === 'hud' || msg.cmd === 'cluster') {
+        if (msg.cmd === 'fullscreen' && this.fullscreen !== null && msg.on !== undefined) {
+            this.fullscreen = Number(msg.on);
+            if (!this.statusDelayMs) this._broadcast(this._status());
+        }
+        if (msg.cmd === 'hud' || msg.cmd === 'cluster' || msg.cmd === 'fullscreen') {
             if (this.statusDelayMs) {
                 clearTimeout(this._statusTimer);
                 this._statusTimer = setTimeout(() => this._broadcast(this._status()), this.statusDelayMs);
@@ -249,7 +256,7 @@ class FakePatch extends LineServer {
         this.mute = false;         /* commands received and not answered */
         this.holdAa = false;       /* an Android Auto change stays busy until releaseAa(failure) */
         this.releaseAa = null;
-        this.map = { cluster: 1, hud: 0, hud_width_pct: 0, hud_offset_x: 0, hud_offset_y: 0, hud_keep_shown: 0 };
+        this.map = { cluster: 1, hud: 0, hud_width_pct: 0, hud_offset_x: 0, hud_offset_y: 0, hud_keep_shown: 0, fullscreen: 0 };
         this.shared = null;
         this.own = {};
         this.active = null;
@@ -370,7 +377,7 @@ class FakePatch extends LineServer {
             return;
         }
         const MAP = { cluster: ['cluster'], hud: ['hud'], 'hud-size': ['hud_width_pct'], 'hud-pos': ['hud_offset_x', 'hud_offset_y'],
-            'hud-keep-shown': ['hud_keep_shown'] };
+            'hud-keep-shown': ['hud_keep_shown'], fullscreen: ['fullscreen'] };
         if (MAP[msg.cmd]) {
             if (!('profile' in msg) ? this._ownSettings() : this.current === undefined || msg.profile !== this.current ||
                     (msg.own === 1) !== !!(msg.profile && this.own[msg.profile])) {

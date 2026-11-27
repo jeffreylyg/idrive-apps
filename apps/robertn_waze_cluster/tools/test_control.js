@@ -468,6 +468,36 @@ test('the HUD map over BMW\'s pop-ups: gives way by default; a flip goes to the 
     c.close();
 });
 
+test('cluster fullscreen: off by default; a flip goes to the render and patchd, the tick follows the render\'s achieved status; ' +
+    'greyed while the map is off the cluster and for a render without it', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('the render has said', () => c.renderStatus && c.clusterOn() === true);
+    assert.deepStrictEqual([c.fullscreenOn(), c.canChooseFullscreen()], [false, true], 'in the map slot, offered');
+    render.cluster = 0; patch.map.cluster = 0;
+    render.announce(render.state, render.reason);
+    await until('the map off the cluster', () => c.clusterOn() === false);
+    assert.strictEqual(c.canChooseFullscreen(), false, 'greyed while the map is off the cluster');
+    c.toggleFullscreen();
+    assert.strictEqual(render.received.filter((m) => m.cmd === 'fullscreen').length, 0, 'nothing sent while greyed');
+    render.cluster = 1; patch.map.cluster = 1;
+    render.announce(render.state, render.reason);
+    await until('on the cluster again', () => c.canChooseFullscreen());
+    c.toggleFullscreen();
+    await until('over the whole cluster', () => c.fullscreenOn() === true && render.fullscreen === 1);
+    await until('saved', () => patch.map.fullscreen === 1);
+    c.toggleFullscreen();
+    await until('in its slot again', () => c.fullscreenOn() === false && patch.map.fullscreen === 0);
+    assert.deepStrictEqual(render.received.filter((m) => m.cmd === 'fullscreen'), [{ cmd: 'fullscreen', on: '1' }, { cmd: 'fullscreen', on: '0' }]);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'fullscreen'), [{ cmd: 'fullscreen', on: 1 }, { cmd: 'fullscreen', on: 0 }]);
+    render.fullscreen = null;
+    render.announce(render.state, render.reason);
+    await until('a render without it', () => c.fullscreenOn() === null && !c.canChooseFullscreen());
+    c.close();
+});
+
 test('an asked HUD size the render does not show: the render\'s own after a moment, at once on a render reconnect; ' +
     'the same step taken again', async (render, patch) => {
     render.hud = 1; patch.map.hud = 1;

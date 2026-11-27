@@ -59,8 +59,14 @@ The app is in the head unit's display language.
 - **Show on:** where the map shows: **Cluster** (the default), **HUD
   (experimental)**, **Cluster and HUD (experimental)** or **Off**. The
   change is immediate. **Off** shows BMW's own content on both.
+- **Cluster fullscreen:** ticked, the map covers the whole cluster instead
+  of the central map area. **The gauges are covered while it is on** (the
+  warning lights stay visible), so use it parked or where you do not need
+  them. The tick appears once the map actually covers the cluster; the
+  checkbox is greyed while the map is off the cluster or the installed tool
+  is an older one. While it is on, a theme hosting the map is ignored.
 - **Own settings for this driver:** ticked, the current driver profile
-  keeps its own Show on, HUD size and HUD position.
+  keeps its own Show on, Cluster fullscreen, HUD size and HUD position.
   Show on and the HUD settings are greyed for a moment while the page loads
   the current driver's settings. Once any driver has own settings, they are
   also greyed for a moment after a driver change and while this checkbox's

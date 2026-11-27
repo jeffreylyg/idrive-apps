@@ -80,6 +80,7 @@ std::string status_line(const FeedStatus &s)
            ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) +
            ",\"hud_x\":" + std::to_string(s.hud_offset_x) + ",\"hud_y\":" + std::to_string(s.hud_offset_y) +
            ",\"hud_keep_shown\":" + (s.hud_keep_shown ? "1" : "0") +
+           ",\"fullscreen\":" + (s.fullscreen ? "1" : "0") +
            /* only while hosted: otherwise the line is as it always was */
            (s.hosted ? ",\"hosted\":1" : "") + "}";
 }
@@ -91,7 +92,9 @@ public:
 
     /* cluster and hud turn the map on each off or on ("on"), hud also sizes
      * and places the HUD's; the map itself comes and goes with the stream.
-     * guide is the app's switch for BMW's turn box (guide_setting.h). */
+     * fullscreen moves the cluster map between its slot and the whole
+     * cluster (map_feeds.h "Fullscreen"). guide is the app's switch for
+     * BMW's turn box (guide_setting.h). */
     void on_command(const std::map<std::string, std::string> &msg) override
     {
         const std::string &cmd = msg.at("cmd");
@@ -104,6 +107,8 @@ public:
             feeds_->set_guide_hold(guide_->hide());
         } else if (cmd == "cluster" && on != msg.end() && (on->second == "0" || on->second == "1")) {
             feeds_->set_cluster(on->second == "1");
+        } else if (cmd == "fullscreen" && on != msg.end() && (on->second == "0" || on->second == "1")) {
+            feeds_->set_fullscreen(on->second == "1");
         } else if (cmd == "hud" && (on != msg.end() || pct != msg.end() || hx != msg.end() || hy != msg.end() ||
                                     keep != msg.end())) {
             if (on != msg.end()) {
@@ -203,6 +208,7 @@ int serve(Config cfg)
         {"target_fps", 0, 60},      {"picture_fps", 0, 60},          {"pan_blocks", 0, 1},
         {"stall_ms", 1000, 600000},
         {"cluster", 0, 1},          {"hud", 0, 1},                   {"hud_fps", 1, 30},
+        {"fullscreen", 0, 1},       {"fullscreen_stretch", 0, 1},
         {"hud_width_pct", 0, 100},  {"hud_offset_x", -800, 800},     {"hud_offset_y", -800, 800},
         {"hud_scale_down", 0, 1},   {"hud_round_corners", 0, 1},     {"hud_black_background", 0, 1},
         {"hud_keep_shown", 0, 1},
@@ -256,6 +262,7 @@ int serve(Config cfg)
     fc.hud_offset_x = (int)cfg.num("hud_offset_x");
     fc.hud_offset_y = (int)cfg.num("hud_offset_y");
     fc.hud_keep_shown = cfg.num("hud_keep_shown") != 0;
+    fc.fullscreen_stretch = cfg.num("fullscreen_stretch") == 1;
     fc.scale_down = cfg.num("hud_scale_down") != 0;
     fc.hud_round_corners = cfg.num("hud_round_corners") != 0;
     fc.hud_black_background = cfg.num("hud_black_background") != 0;
@@ -290,7 +297,8 @@ int serve(Config cfg)
 
     std::string err;
     VideoProducer producer(vc);
-    MapFeeds feed(fc, cfg.num("cluster") == 1, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"));
+    MapFeeds feed(fc, cfg.num("cluster") == 1, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"),
+                  cfg.num("fullscreen") == 1);
     Server server(&feed, &guide);
     Control control(&server);
     server.set_control(&control);
@@ -516,6 +524,8 @@ void define_keys(Config *cfg)
     cfg->define("map_state_file", "/var/opt/waze-on-cluster/map.state.conf");
     cfg->define("features_file", "/var/opt/waze-on-cluster/features.conf");
     cfg->define("cluster", "1");
+    cfg->define("fullscreen", "0");
+    cfg->define("fullscreen_stretch", "0");
     cfg->define("hud", "0");
     cfg->define("hud_fps", "10");
     cfg->define("hud_width_pct", "0");

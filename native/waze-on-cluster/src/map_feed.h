@@ -102,6 +102,9 @@ struct FeedConfig {
     cr::VideoOptions video;   /* w and h are the decoded frame's */
     MapRect rect;             /* where in the target; unset: the map area */
     bool guide_hold = true;   /* the layer's guide_hold: BMW's turn box hidden while the map shows */
+    /* On `panel` (the cluster map fullscreen, MapFeeds): 1 the map stretched
+     * over the whole scene; 0 fitted to its height, centred. */
+    bool fullscreen_stretch = false;
     /* On the HUD: the map's width in percent of the HUD's (its height follows
      * the picture's shape, at most the HUD's), centred. 0: the kit's fitted
      * box (about 57 %). */
@@ -153,6 +156,7 @@ struct FeedStatus {
     unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */
     int hud_offset_x = 0, hud_offset_y = 0;   /* and where it is moved to from the centre */
     bool hud_keep_shown = false;   /* the HUD map kept shown over the stock HMI's pop-ups */
+    bool fullscreen = false;   /* the cluster map over the whole cluster, achieved (MapFeeds) */
 };
 
 /* Whether a status is worth a log line: its state, reason or target differs
@@ -194,6 +198,8 @@ public:
     /* The layer's guide_hold from now on. */
     void set_guide_hold(bool hold);
     const std::string &target() const { return cfg_.target; }
+    /* The renderer's hello has no cfg_.target (make_layer refused on it). */
+    bool target_absent() const { return target_absent_; }
     /* The HUD map's size (FeedConfig::hud_width_pct), applied at once to a
      * map on the HUD. */
     void set_hud_width(unsigned pct);
@@ -341,6 +347,7 @@ private:
     mutable int placed_x_ = 0, placed_y_ = 0;
     unsigned cap_kb_ = 0, max_kb_ = 0;
     std::string budget_reason_, refused_, report_;
+    bool target_absent_ = false;   /* the hello had no cfg_.target */
     bool connected_ = false, status_asked_ = false;
     /* Unreachable this long (it starts with the first client): an error. */
     static const int64_t kUnreachableMs = 15000;

@@ -56,6 +56,12 @@
  *   HUD's slots and the turn box's hold released, the stock map and box
  *   shown again, nothing asked of the renderer while off; the cluster, or
  *   both, again: the next frame shown, the hold back;
+ * - Fullscreen (fullscreen_map): the cluster's map on the whole-cluster
+ *   panel, fitted to its height and centred or stretched over all of it,
+ *   from the start and switched at runtime, the newest picture carried
+ *   over both ways; a renderer whose hello has no panel keeps the map in
+ *   its slot and the status never says fullscreen; saved but inert while
+ *   the cluster is off, and the cluster turned on then starts on the panel;
  * - hosted by another app's scene (hosting): the map in its scene at the
  *   host's rect with the host's part of the picture, its own slot released;
  *   hidden by the host, no layer and nothing sent; shown again; the host
@@ -1475,10 +1481,126 @@ static void unseen_map()
     ok("MapFeeds: neither: not unseen (no pictures at all)", !feeds.unseen() && !feeds.wants_frames());
 }
 
+/* Cluster fullscreen (map_feeds.h "Fullscreen"): the cluster's map on the
+ * whole-cluster panel, fitted to its height and centred, or stretched over
+ * all of it (fullscreen_stretch); switched at runtime with the newest
+ * picture carried over, and back; a renderer whose hello has no panel
+ * keeps the map in its slot; saved but inert while the cluster is off,
+ * and a cluster turned on then starts on the panel. */
+static void fullscreen_map()
+{
+    const std::vector<uint8_t> f1 = atlas(21);
+    std::vector<uint8_t> spare;
+    const auto pump = [&spare](Rig &b, MapFeeds &feeds, int64_t ms, const std::vector<uint8_t> *frame) {
+        for (int64_t t = 0; t < ms; t += 5) {
+            b.now += 5;
+            if (frame && t % 65 == 0 && feeds.wants_frames()) {
+                spare.assign(frame->begin(), frame->end());
+                feeds.offer(&spare, (uint64_t)b.now, b.now);
+            }
+            for (int round = 0; round < 400; round++) {
+                std::vector<pollfd> fds;
+                const size_t first = b.svc->poll_fds(&fds);
+                const int n = ::poll(fds.data(), fds.size(), 0);
+                b.port.tick(b.now);
+                b.svc->after_poll(fds, first, b.now);
+                const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) ||
+                                     (feeds.hud_feed() && feeds.hud_feed()->wants_write());
+                feeds.poll(b.now);
+                if (round > 0 && n <= 0 && !pending)
+                    break;
+            }
+        }
+    };
+    /* The one layer on the target (0 the map's, 1 the panel's); null: none,
+     * or one elsewhere too. */
+    const auto layer_on = [](Rig &b, int target) -> const crs::Layer * {
+        const crs::Layer *found = nullptr;
+        for (const crs::Layer *l : b.svc->compositor().layers()) {
+            if (l->target() != target)
+                return nullptr;
+            found = l;
+        }
+        return found;
+    };
+    bool with = false;
+
+    Rig b;
+    b.feed.reset();
+    b.start();
+    FeedConfig fc;
+    fc.socket = b.path;
+    fc.video.level_bits = 0;
+    MapFeeds feeds(fc, true, false, 10, true);
+    feeds.set_stream(true, false, Picture::Shown);
+    pump(b, feeds, 2000, &f1);
+    const crs::Layer *p = layer_on(b, 1);
+    ok("fullscreen from the start: one layer on the panel, the picture fitted to its height, centred",
+       p && p->params.rect.x == 144 && p->params.rect.y == 0 && p->params.rect.w == 1632 && p->params.rect.h == 720);
+    ok("fullscreen: showing on the panel, the status achieved",
+       feeds.status("decode").state == "showing" && feeds.status("decode").target == "panel" &&
+           feeds.status("decode").fullscreen && b.drawing("panel", f1, &with) && with);
+
+    feeds.set_fullscreen(false);
+    pump(b, feeds, 2000, nullptr);   /* no new frame: the newest must carry over */
+    const crs::Layer *m = layer_on(b, 0);
+    ok("switched back at runtime: the map in its slot with the newest picture, the panel's layer gone",
+       m && m->params.rect.w == 1088 && m->params.rect.h == 480 && !feeds.status("decode").fullscreen &&
+           feeds.status("decode").target == "map" && b.drawing("map", f1, &with) && with);
+
+    feeds.set_fullscreen(true);
+    pump(b, feeds, 2000, nullptr);
+    ok("switched to fullscreen at runtime: on the panel with the newest picture",
+       layer_on(b, 1) && feeds.status("decode").fullscreen && b.drawing("panel", f1, &with) && with);
+
+    Rig s;
+    s.feed.reset();
+    s.start();
+    FeedConfig sf = fc;
+    sf.socket = s.path;
+    sf.fullscreen_stretch = true;
+    MapFeeds stretch(sf, true, false, 10, true);
+    stretch.set_stream(true, false, Picture::Shown);
+    pump(s, stretch, 2000, &f1);
+    const crs::Layer *q = layer_on(s, 1);
+    ok("fullscreen_stretch: the map over the whole 1920x720 panel",
+       q && q->params.rect.x == 0 && q->params.rect.y == 0 && q->params.rect.w == 1920 && q->params.rect.h == 720);
+
+    Rig n;
+    n.feed.reset();
+    n.sc.targets.resize(1);   /* a renderer whose hello has no panel */
+    n.start();
+    FeedConfig nf = fc;
+    nf.socket = n.path;
+    MapFeeds none(nf, true, false, 10, true);
+    none.set_stream(true, false, Picture::Shown);
+    pump(n, none, 2000, &f1);
+    ok("a renderer without the panel: the map stays in its slot, fullscreen never achieved",
+       none.status("decode").state == "showing" && none.status("decode").target == "map" &&
+           !none.status("decode").fullscreen && n.drawing("map", f1, &with) && with);
+
+    Rig o;
+    o.feed.reset();
+    o.start();
+    FeedConfig of = fc;
+    of.socket = o.path;
+    MapFeeds off(of, false, false, 10);
+    off.set_stream(true, false, Picture::Shown);
+    off.set_fullscreen(true);
+    pump(o, off, 500, &f1);
+    ok("the cluster off: fullscreen saved but inert, nothing on any target",
+       !off.wants_frames() && o.svc->compositor().layers().empty() && !off.status("decode").fullscreen);
+    off.set_cluster(true);
+    pump(o, off, 2000, &f1);
+    ok("the cluster on then: built straight on the panel",
+       layer_on(o, 1) && off.status("decode").fullscreen && o.drawing("panel", f1, &with) && with);
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, nullptr, _IONBF, 0);
+    fullscreen_map();
     hosting();
     layers_hosting();
     hosted_wake();

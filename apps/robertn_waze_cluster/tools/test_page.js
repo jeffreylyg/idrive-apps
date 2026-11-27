@@ -26,6 +26,9 @@
  * its label kept, while the cluster renderer holds the box shown; Show on,
  * a drop-down of Cluster, HUD, both and Off in General, Cluster by default,
  * each pick through the render and patchd, the display turned on first;
+ * Cluster fullscreen under Show on, unticked by default, ticked only once
+ * the render's status says the map covers the whole cluster, saved by
+ * patchd, greyed and unticked for a render without it;
  * Off from the cluster and from both, Cluster map and HUD map Off, the HUD's
  * rows and the turn box greyed, Off also for a render on neither; the HUD
  * off by default, its size slider and position
@@ -285,7 +288,7 @@ async function main() {
     const main = xmlIds('1').map(([id]) => [id, components[id].type, components[id].name, shipped(components[id])]);
     assert.deepStrictEqual(main.map(([id, type, name, text]) => (type === 'title' ? name : `${name} ${text}`)), [
         'wocTitle',
-        'wocHeadGeneral General', 'wocShowOn Show on: Cluster', 'wocProfile Own settings for this driver', 'wocProfileStatus ', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs',
+        'wocHeadGeneral General', 'wocShowOn Show on: Cluster', 'wocFullscreen Cluster fullscreen', 'wocProfile Own settings for this driver', 'wocProfileStatus ', 'wocMap Cluster map: Off', "wocGuide Hide BMW's turn box", 'wocLogs Logs',
         'wocHeadHud HUD', 'wocHud HUD map: \u2014', "wocHudKeep Keep HUD map over BMW's pop-ups", 'wocHudSize Size: \u2014', 'wocHudPos Position: \u2014', 'wocHudLeft Move left',
         'wocHudRight Move right', 'wocHudUp Move up', 'wocHudDown Move down', 'wocHudCentre Centre',
         'wocHeadCarPlay CarPlay', 'wocStatus Status: Connecting…', 'wocEnable Patch', 'wocDisable Remove patch', 'wocWifi ', 'wocWifiHint ',
@@ -307,7 +310,7 @@ async function main() {
         .find((id) => components[id].name === n)].properties.Focusable.value]), Array(4).fill(['0', 0]), 'the section headers take no focus');
     assert.strictEqual(main.find(([, , name]) => focus[name] === '3')[2], 'wocShowOn', 'the first row the controller stops on: Show on');
     assert(!main.some(([, , name]) => /^wocRow|^wocSetup|^wocCapture/.test(name)), 'no log rows, setup line or capture on the main page');
-    assert.deepStrictEqual(['wocAaCard', 'wocGuide', 'wocProfile', 'wocHudKeep'].map((n) => widgets[n]), Array(4).fill('LT_CheckBox_1Row'),
+    assert.deepStrictEqual(['wocAaCard', 'wocGuide', 'wocProfile', 'wocHudKeep', 'wocFullscreen'].map((n) => widgets[n]), Array(5).fill('LT_CheckBox_1Row'),
         'the on/off settings are checkboxes');
     assert.deepStrictEqual([widgets.wocShowOn, widgets.wocHudSize], ['LT_DropDownMenu_1Row_2Col3070', 'LT_Slider_LeftJustified_Fill_Steps'],
         'where the map shows: a drop-down of four; the HUD\'s size: a slider');
@@ -358,8 +361,8 @@ async function main() {
         assert(!logs.some((l) => /^error/.test(l)), logs.filter((l) => /^error/.test(l)).join('\n'));
         const bound = logs.filter((l) => l.startsWith('info: BIND OK: ')).map((l) => l.split(' ')[3]).sort();
         assert.deepStrictEqual(bound, ['wocAaCard', 'wocAaDisable', 'wocAaEnable', 'wocAaZoomIn', 'wocAaZoomOut', 'wocCapture', 'wocDisable', 'wocEnable',
-            'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudKeep', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocLogs', 'wocLogsSave', 'wocProfile',
-            'wocRestart'],
+            'wocFullscreen', 'wocGuide', 'wocHudCentre', 'wocHudDown', 'wocHudKeep', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocLogs', 'wocLogsSave',
+            'wocProfile', 'wocRestart'],
             'bound buttons and checkbox');
         assert.strictEqual(byName.wocRestart.visible, false, 'restart button hidden while the map shows');
         console.log('ok   a page opened while the map is up shows it');
@@ -449,7 +452,7 @@ async function main() {
         const hudRows = () => ['wocHudKeep', 'wocHudSize', 'wocHudLeft', 'wocHudRight', 'wocHudUp', 'wocHudDown'].map((n) => byName[n].enabled);
         const own = byName.wocProfile;
         const sync = OnlineApp.instance._profiles;
-        const mapWrites = () => patch.received.filter((m) => ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown'].includes(m.cmd));
+        const mapWrites = () => patch.received.filter((m) => ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown', 'fullscreen'].includes(m.cmd));
 
         const profileLine = byName.wocProfileStatus;
         /* no driver with own settings: the shared settings are the only
@@ -547,6 +550,33 @@ async function main() {
         showOn.pick(2);
         await until('both', () => render.cluster === 1 && showOn.shown() === 'Show on: Cluster and HUD (experimental)' &&
             byName.wocGuide.enabled === true);
+        /* cluster fullscreen: in the map slot by default; a press covers the
+         * whole cluster once the render's status says so, patchd saves it */
+        const full = byName.wocFullscreen;
+        await until('offered', () => full.enabled === true);
+        assert(full.selected === false && full.text === 'Cluster fullscreen', 'in the map slot by default');
+        render.received.length = 0;
+        await sleep(450);
+        full.press();
+        await until('over the whole cluster', () => render.fullscreen === 1 && full.selected === true);
+        assert.deepStrictEqual(render.received, [{ cmd: 'fullscreen', on: '1' }], 'one command to the render');
+        await until('saved', () => patch.received.some((m) => m.cmd === 'fullscreen' && m.on === 1) && patch.map.fullscreen === 1);
+        await sleep(450);
+        full.press();
+        await until('in its slot again', () => render.fullscreen === 0 && full.selected === false && patch.map.fullscreen === 0);
+        render.fullscreen = null;   /* a render without the setting */
+        render.announce(render.state, render.reason);
+        await until('a render without it: greyed, unticked', () => full.enabled === false && full.selected === false);
+        render.received.length = 0;
+        await sleep(450);
+        full.press();
+        await until('a greyed fullscreen pressed: unticked again', () => full.selected === false);
+        await sleep(100);
+        assert.deepStrictEqual(render.received, [], 'nothing sent');
+        render.fullscreen = 0;
+        render.announce(render.state, render.reason);
+        await until('fullscreen offered again', () => full.enabled === true);
+        await sleep(450);
         render.hudState = 'disabled';
         render.announce(render.state, render.reason);
         await until('disabled after errors', () => byName.wocHud.text === 'HUD map: Disabled after errors' &&
@@ -776,7 +806,7 @@ async function main() {
         Object.values(components).filter((d) => !/^(wocRestart|wocWifi|wocProfileStatus)/.test(d.name) && d.type !== 'title')
             .forEach((d) => assert.strictEqual(byName[d.name].visible, true, `${d.name} stays on the page`));
         ['wocEnable', 'wocDisable', 'wocAaEnable', 'wocAaDisable', 'wocAaZoomOut', 'wocAaZoomIn', 'wocAaCard', 'wocGuide', 'wocShowOn', 'wocProfile', 'wocHudSize',
-            'wocHudLeft', 'wocHudCentre', 'wocHudKeep']
+            'wocHudLeft', 'wocHudCentre', 'wocHudKeep', 'wocFullscreen']
             .forEach((n) => assert.deepStrictEqual([...byName[n].enabledSeen].sort(), [false, true], `${n} greyed and enabled in place`));
         const valueRow = /^[A-Z][A-Za-z ]+: [A-Z0-9\u2014]/;
         ['wocStatus', 'wocAaStatus', 'wocAaZoom', 'wocMap', 'wocHud', 'wocHudSize', 'wocHudPos', 'wocRestartStatus']
