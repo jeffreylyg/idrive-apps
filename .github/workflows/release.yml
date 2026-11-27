@@ -35,6 +35,10 @@ jobs:
     # main only: the release commit goes on top of it
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    env:
+      # this fork's releases: upstream's version and a fourth number,
+      # 0.14.19.1 (0.14.1901 in the catalog; release/README.md "Forks")
+      MGU_FORK_VERSIONS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

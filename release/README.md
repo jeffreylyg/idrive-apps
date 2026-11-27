@@ -74,6 +74,21 @@ tool's `component.json` or the app's `release.json`.
 The catalog is not signed: the Store fetches it over HTTPS and checks each
 artifact's size and sha256 against it.
 
+**Forks.** A fork that publishes its own catalog sets
+`MGU_FORK_VERSIONS: "1"` in its `release.yml`. A component it changed is
+released as the followed repository's version with a fourth number for
+its own releases on it, 1 to 99: upstream's 0.14.19 becomes 0.14.19.1,
+then 0.14.19.2, and after upstream's 0.14.20 is merged in, 0.14.20.1. Its
+tag and its GitHub release's title show that (`waze-on-cluster@0.14.19.1`,
+"Maps on cluster 0.14.19.1"). The Store and the catalog take `x.y.z`
+only, so the tree and the catalog fold the fourth number into the third,
+`x.y.(z*100+n)`: 0.14.1901, 0.14.1902, 0.14.2001, each newer than the last,
+so the car finds every release as an update. A component the fork did not
+change keeps the followed repository's version and plain tag, and is
+published too when the fork's catalog lacks it (any at its first publish).
+When upstream's version is merged in, its version line may conflict with
+the fork's: take upstream's, and the next release counts from it.
+
 **Publishing.** Run `.github/workflows/release.yml` by hand (Actions,
 Release) on `main`, with the component ids or none for every changed one.
 It runs `stamp`, pushes the release commit to `main`, then `publish

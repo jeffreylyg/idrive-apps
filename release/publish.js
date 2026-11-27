@@ -6,8 +6,10 @@
  * repository the "origin" remote names):
  *
  *   github:<owner>/<repo>  GitHub Releases of the repository: each version is
- *                          the release <id>@<version> with its artifact as
- *                          the one asset; the release "catalog" holds
+ *                          the release <id>@<version> (a fork's own,
+ *                          MGU_FORK_VERSIONS: <id>@x.y.z.n, tags.js) with
+ *                          its artifact as the one asset; the release
+ *                          "catalog" holds
  *                          catalog.json and the icons it names. Runs in GitHub Actions only, with the
  *                          workflow's GITHUB_TOKEN (GH_TOKEN). A repository
  *                          whose visibility is not MGU_PUBLISH_VISIBILITY
@@ -31,8 +33,14 @@ const path = require('path');
 const cp = require('child_process');
 const crypto = require('crypto');
 const { parse } = require('./catalog.js');
+const { releaseTag, displayVersion } = require('./tags.js');
 
 const REPO = path.join(__dirname, '..');
+
+/* Whether the repository has this tag (a fork's version names, tags.js). */
+function hasTag(tag) {
+    return cp.spawnSync('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}^{commit}`], { cwd: REPO }).status === 0;
+}
 
 function originRepo() {
     try {
@@ -184,10 +192,11 @@ const targets = {
             if (download === isPublic()) {
                 return url;
             }
-            const release = releaseOf(`${entry.id}@${entry.version}`);
+            const tag = releaseTag(entry.id, entry.version, hasTag);
+            const release = releaseOf(tag);
             const asset = release && release.assets.length === 1 && release.assets[0];
             if (!asset || asset.size !== entry.artifact.size) {
-                throw new Error(`${entry.id}@${entry.version}: its release's asset is missing or not ${entry.artifact.size} bytes`);
+                throw new Error(`${tag}: its release's asset is missing or not ${entry.artifact.size} bytes`);
             }
             return assetUrl(asset);
         },
@@ -197,13 +206,13 @@ const targets = {
          * name GitHub gave it. Each new release is marked Latest, so a run's
          * last one is the repository's Latest. */
         uploadArtifact(entry, file) {
-            const tag = `${entry.id}@${entry.version}`;
+            const tag = releaseTag(entry.id, entry.version, hasTag);
             const view = () => releaseOf(tag);
             let release = view();
             if (!release) {
                 const commit = cp.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).trim();
                 gh(['release', 'create', tag, file, '-R', WHERE, '--target', commit, '--latest',
-                    '--title', `${entry.title} ${entry.version}`, '--notes', entry.description || tag]);
+                    '--title', `${entry.title} ${displayVersion(entry.id, entry.version, hasTag)}`, '--notes', entry.description || tag]);
                 release = view();
             } else if (release.assets.length !== 1 || assetSha256(tag) !== entry.artifact.sha256) {
                 release.assets.forEach((a) => gh(['api', '-X', 'DELETE', `repos/${WHERE}/releases/assets/${a.id}`]));

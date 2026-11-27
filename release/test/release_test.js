@@ -25,7 +25,13 @@
  * version (a patch; minor or major by its pull requests' labels), once for
  * any number of changes, keeps a version not released yet, resolves
  * "requires" of "next" and turns the CHANGELOG's Unreleased section into the
- * version's; an app's staged tree has no version in its folder name.
+ * version's; an app's staged tree has no version in its folder name. A
+ * fork's versions (MGU_FORK_VERSIONS): upstream's version and a fourth
+ * number for its own releases on it, x.y.z.n in tags, titles and CHANGELOG
+ * headings and x.y.(z*100+n) in the tree and the catalog, counting from the
+ * followed repository's plain tag and on from its own; a merged-in upstream
+ * version starts again at .1, an unchanged component keeps the plain tag,
+ * and a 100th release on one version is refused.
  * Icons: an app's catalog entry names <id>.png with the sha256 of the PNG
  * its entry point shows; a tool's names none.
  *
@@ -41,6 +47,7 @@ const { buildArtifact } = require('../tool_artifact.js');
 const { components, catalogEntry, catalogTexts, retext, exportHead, bumpVersion, releaseChangelog, plan, writePlan,
     prLabels } = require('../release.js');
 const catalog = require('../catalog.js');
+const { forkMode, forkVersion, forkParts, displayVersion, releaseTag } = require('../tags.js');
 
 /* The members of a tgz the packer wrote (ustar), by name. */
 function untgz(file) {
@@ -315,17 +322,18 @@ function versionRepo() {
         g(['commit', '-q', '-m', rel]);
         return g(['rev-parse', 'HEAD']);
     };
-    const stamp = (ids) => {
-        const steps = plan(components(root), ids || [], root);
+    /* fork: a fork's release (tags.js), tagged as its version is shown */
+    const stamp = (ids, fork = false) => {
+        const steps = plan(components(root), ids || [], root, fork);
         writePlan(root, steps);
         if (steps.length) {
             g(['commit', '-q', '-am', 'release']);
         }
-        steps.forEach((p) => g(['tag', `${p.c.id}@${p.version}`]));
-        return steps.map((p) => `${p.c.id}@${p.version}`);
+        steps.forEach((p) => g(['tag', `${p.c.id}@${p.display}`]));
+        return steps.map((p) => `${p.c.id}@${p.display}`);
     };
     const json = (id) => JSON.parse(fs.readFileSync(path.join(root, 'native', id, 'component.json'), 'utf8'));
-    return { root, change, stamp, json, log: () => fs.readFileSync(path.join(root, 'native', 'a', 'CHANGELOG.md'), 'utf8') };
+    return { root, g, change, stamp, json, log: () => fs.readFileSync(path.join(root, 'native', 'a', 'CHANGELOG.md'), 'utf8') };
 }
 
 test('versions: the next version, a patch or what a label asks for', () => {
@@ -388,6 +396,55 @@ test('versions: a version stamped and not released keeps its number; later entri
     // two pull requests that each added the heading, merged with both sides' lines (merge=union)
     assert.strictEqual(releaseChangelog('# C\n\n## Unreleased\n\nOne.\n\n## Unreleased\n\nTwo.\n\n## 1.0.0\n\nx\n', '1.0.1'),
         '# C\n\n## Unreleased\n\n## 1.0.1\n\nOne.\n\nTwo.\n\n## 1.0.0\n\nx\n');
+});
+
+test('a fork\'s versions: the fourth number folded into the third, shown as x.y.z.n where upstream has no such tag', () => {
+    assert.strictEqual(forkVersion('0.14.19', 1), '0.14.1901');
+    assert.strictEqual(forkVersion('0.14.19', 2), '0.14.1902');
+    assert.strictEqual(forkVersion('0.15.0', 1), '0.15.1', 'on an x.y.0');
+    assert.throws(() => forkVersion('0.14.19', 100), /past the 99/);
+    assert.throws(() => forkVersion('0.14.19', 0), /past the 99/);
+    assert.deepStrictEqual(forkParts('0.14.1902'), { base: '0.14.19', n: 2 });
+    assert.strictEqual(forkParts('0.14.1900'), null, 'no own release in it');
+    const none = () => false, all = () => true;
+    assert.strictEqual(displayVersion('waze-on-cluster', '0.14.1901', none, true), '0.14.19.1');
+    assert.strictEqual(releaseTag('waze-on-cluster', '0.14.1901', none, true), 'waze-on-cluster@0.14.19.1');
+    assert.strictEqual(releaseTag('cluster-render', '0.8.14', all, true), 'cluster-render@0.8.14', 'upstream\'s own version: its tag');
+    assert.strictEqual(releaseTag('waze-on-cluster', '0.14.1901', none, false), 'waze-on-cluster@0.14.1901', 'not a fork: as always');
+    assert.strictEqual(forkMode(''), false);
+    assert.strictEqual(forkMode('1'), true);
+    assert.throws(() => forkMode('yes'), /MGU_FORK_VERSIONS/);
+});
+
+test('a fork\'s versions: .1 on upstream\'s, .2 on its own, .1 again on a merged-in upstream version', () => {
+    process.env.MGU_RELEASE_LABELS = 'off';
+    const r = versionRepo();   // a@1.0.0, b@2.0.0: the followed repository's plain tags
+    // upstream's a 1.0.7, released (its plain tag)
+    r.change('native/a/component.json', JSON.stringify(Object.assign(r.json('a'), { version: '1.0.7' }), null, 2));
+    r.g(['tag', 'a@1.0.7']);
+    assert.deepStrictEqual(plan(components(r.root), [], r.root, true), [], 'nothing changed since the plain tags');
+    r.change('native/a/hook.js', 'console.log(1);\n', 'Fork fix.');
+    assert.deepStrictEqual(r.stamp([], true), ['a@1.0.7.1'], 'upstream\'s 1.0.7 and its first own release');
+    assert.strictEqual(r.json('a').version, '1.0.701', 'folded into the third number');
+    assert.ok(r.log().startsWith('# Changelog\n\n## Unreleased\n\n## 1.0.7.1\n\nFork fix.\n\n## 1.0.0\n'), r.log());
+    assert.deepStrictEqual(r.stamp([], true), [], 'released: nothing left, by its own tag');
+    r.change('native/a/hook.js', 'console.log(2);\n', 'Another fork fix.');
+    assert.deepStrictEqual(r.stamp([], true), ['a@1.0.7.2'], 'the next own release');
+    assert.strictEqual(r.json('a').version, '1.0.702');
+    assert.deepStrictEqual(plan(components(r.root), [], r.root, false).map((p) => `${p.version} ${p.level}`), ['1.0.702 new'],
+        'not a fork: no tag a@1.0.702, a version not released yet, kept');
+    // upstream's 1.0.8 merged in: its version and its plain tag; then a change of the fork's
+    r.change('native/a/component.json', JSON.stringify(Object.assign(r.json('a'), { version: '1.0.8' }), null, 2));
+    r.g(['tag', 'a@1.0.8']);
+    r.change('native/a/hook.js', 'console.log(3);\n', 'Fork fix on 1.0.8.');
+    assert.deepStrictEqual(r.stamp([], true), ['a@1.0.8.1'], '.1 again on the merged-in version');
+    assert.strictEqual(r.json('a').version, '1.0.801', 'newer than 1.0.702: an update for the car');
+    assert.ok(catalog.compareVersions('1.0.801', '1.0.702') > 0);
+    // b requires a "next": the catalog version, x.y.z
+    r.change('native/a/hook.js', 'console.log(4);\n', 'Fix with b.');
+    r.change('native/b/component.json', JSON.stringify(Object.assign(r.json('b'), { requires: { a: 'next' } }), null, 2));
+    assert.deepStrictEqual(r.stamp([], true), ['a@1.0.8.2', 'b@2.0.0.1'], 'b changed too: its first own release');
+    assert.deepStrictEqual([r.json('b').version, r.json('b').requires], ['2.0.1', { a: '1.0.802' }], '"next" is the catalog version');
 });
 
 test('versions: a CHANGELOG without what changed stops the release; "next" names this repository only', () => {
