@@ -40,6 +40,7 @@ const OUT = path.join(__dirname, 'out');
 const PACKER = path.join('release', 'tool_artifact.js');
 const publishTarget = require('./publish');
 const { compareVersions, textsOf, SEMVER } = require('./catalog.js');
+const { forkMode, forkVersion, forkParts, displayVersion, releaseTag } = require('./tags.js');
 
 function readJson(file) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -694,26 +695,40 @@ function levelOf(commits, repo) {
 /* What a release of the selected components (none: all) does: for each
  * component changed since its tag <id>@<version>, the next version; a
  * component whose version has no tag yet (stamped, not published; or new)
- * keeps it. A component that requires another one "next" brings that one
- * along. Returns [{ c, version, level, resolved }] for the components to
- * release. */
-function plan(all, ids, repo = REPO) {
+ * keeps it. A fork (tags.js, MGU_FORK_VERSIONS) gives a component changed
+ * since the followed repository's plain tag its first own release on that
+ * version (0.14.19: 0.14.19.1, in the tree 0.14.1901), and one changed since
+ * its own tag the next (0.14.19.2). A component that requires another one
+ * "next" brings that one along. Returns [{ c, version, display, level,
+ * resolved }] for the components to release: version as the tree and the
+ * catalog have it, display as its tag and title show it. */
+function plan(all, ids, repo = REPO, fork = forkMode()) {
     const byId = new Map(all.map((c) => [c.id, c]));
     const chosen = new Set(select(all, ids).map((c) => c.id));
     const out = new Map();
+    const has = (t) => tagExists(t, repo);
     const consider = (c) => {
-        const tag = `${c.id}@${c.version}`;
         const paths = c.shipped.concat(c.listed);
-        if (!tagExists(tag, repo)) {
-            out.set(c.id, { c, version: c.version, level: 'new' });
+        const plain = `${c.id}@${c.version}`;
+        const own = releaseTag(c.id, c.version, has, fork);
+        const tag = has(plain) ? plain : own !== plain && has(own) ? own : null;
+        if (!tag) {
+            out.set(c.id, { c, version: c.version, display: displayVersion(c.id, c.version, has, fork), level: 'new' });
             return;
         }
         if (cp.spawnSync('git', ['diff', '--quiet', tag, 'HEAD', '--'].concat(paths), { cwd: repo }).status === 0) {
             return;
         }
+        if (fork) {
+            // the followed repository's version: its first own release; an own one: the next
+            const f = tag === plain ? { base: c.version, n: 0 } : forkParts(c.version);
+            out.set(c.id, { c, version: forkVersion(f.base, f.n + 1), display: `${f.base}.${f.n + 1}`, level: 'fork' });
+            return;
+        }
         const commits = git(['log', '--format=%H', `${tag}..HEAD`, '--'].concat(paths), { cwd: repo }).split('\n').filter(Boolean);
         const level = levelOf(commits, repo);
-        out.set(c.id, { c, version: bumpVersion(c.version, level), level });
+        const version = bumpVersion(c.version, level);
+        out.set(c.id, { c, version, display: version, level });
     };
     all.filter((c) => chosen.has(c.id)).forEach(consider);
     // what a chosen component requires "next" is released with it
@@ -745,9 +760,10 @@ function writePlan(root, steps) {
         const changelog = path.join(root, p.c.changelog);
         if (fs.existsSync(changelog)) {
             const text = fs.readFileSync(changelog, 'utf8');
-            const released = releaseChangelog(text, p.version);
-            if (released === null && !text.includes(`\n## ${p.version}\n`)) {
-                throw new Error(`${p.c.changelog}: no "## Unreleased" section with what ${p.c.id} ${p.version} changes`);
+            const heading = p.display || p.version;
+            const released = releaseChangelog(text, heading);
+            if (released === null && !text.includes(`\n## ${heading}\n`)) {
+                throw new Error(`${p.c.changelog}: no "## Unreleased" section with what ${p.c.id} ${heading} changes`);
             }
             if (released !== null) {
                 fs.writeFileSync(changelog, released);
@@ -772,8 +788,10 @@ function cmdStamp(ids, dryRun) {
     const steps = plan(components(), ids);
     steps.forEach((p) => {
         const req = Object.keys(p.resolved).map((id) => `, requires ${id} ${p.resolved[id]}`).join('');
-        const how = p.level === 'new' ? 'not released yet' : `${p.level} from ${p.c.version}`;
-        console.log(`${dryRun ? 'would release' : 'releasing'} ${p.c.id}@${p.version} (${how}${req})`);
+        const how = p.level === 'new' ? 'not released yet'
+            : p.level === 'fork' ? `this repository's own release on ${p.display.replace(/\.\d+$/, '')}, ${p.version} in the catalog`
+                : `${p.level} from ${p.c.version}`;
+        console.log(`${dryRun ? 'would release' : 'releasing'} ${p.c.id}@${p.display} (${how}${req})`);
     });
     if (!steps.length) {
         console.log('nothing changed since the last release');
@@ -788,7 +806,7 @@ function cmdStamp(ids, dryRun) {
     if (!git(['status', '--porcelain', '--untracked-files=no'])) {
         return;
     }
-    git(['commit', '-q', '-m', `release: ${steps.map((p) => `${p.c.id}@${p.version}`).join(', ')}`]);
+    git(['commit', '-q', '-m', `release: ${steps.map((p) => `${p.c.id}@${p.display}`).join(', ')}`]);
     console.log(`committed ${git(['rev-parse', '--short', 'HEAD'])}`);
 }
 
@@ -895,8 +913,11 @@ function cmdPublish(ids, dryRun, stamped) {
     removed.forEach((id) => current.delete(id));
     if (stamped) {
         // what the last stamp chose, and any component whose version is
-        // tagged but not in the catalog (a publish that stopped part-way)
-        const lagging = components().filter((c) => tagExists(`${c.id}@${c.version}`, REPO) &&
+        // tagged but not in the catalog (a publish that stopped part-way; in
+        // a fork, also a version the followed repository released that this
+        // catalog lacks, such as any unchanged one at a fork's first publish)
+        const has = (t) => tagExists(t, REPO);
+        const lagging = components().filter((c) => (has(`${c.id}@${c.version}`) || has(releaseTag(c.id, c.version, has))) &&
             (!current.has(c.id) || current.get(c.id).version !== c.version));
         ids = [...new Set(fs.readFileSync(STAMPED, 'utf8').split(/\s+/).filter(Boolean).concat(lagging.map((c) => c.id)))];
     }
