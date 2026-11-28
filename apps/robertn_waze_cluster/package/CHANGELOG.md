@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.19.1
+
 Cluster fullscreen, a checkbox under Show on, unticked by default: the
 cluster map over the whole cluster instead of the central map area. The
 gauges are covered while it is on, so use it parked or where you do not
