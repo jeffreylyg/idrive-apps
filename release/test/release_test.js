@@ -45,7 +45,7 @@ const zlib = require('zlib');
 const cp = require('child_process');
 const { buildArtifact } = require('../tool_artifact.js');
 const { components, catalogEntry, catalogTexts, retext, unmetRequires, exportHead, bumpVersion, releaseChangelog, plan, writePlan,
-    prLabels } = require('../release.js');
+    prLabels, rewrittenBehind } = require('../release.js');
 const catalog = require('../catalog.js');
 const { forkMode, forkVersion, forkParts, displayVersion, releaseTag } = require('../tags.js');
 
@@ -479,6 +479,20 @@ test('an app\'s staged tree has no version in its folder name', () => {
     fs.writeFileSync(path.join(dir, 'robertn_x@1.0.0', 'package.json'), '{ "name": "robertn_x", "version": "1.0.0", "mguLocalOnly": true }');
     fs.writeFileSync(path.join(dir, 'mgu-app.json'), '{ "schema": 1, "id": "robertn_x", "version": "1.0.0", "tree": "robertn_x@1.0.0" }');
     assert.throws(() => components(root), /without a version in its name/);
+});
+
+test('a fork\'s rewritten history: published versions newer than the tree\'s are named, the rest pass', () => {
+    const tree = [{ id: 'waze-on-cluster', version: '0.14.2101' }, { id: 'robertn_waze_cluster', version: '0.6.1901' },
+        { id: 'cluster-render', version: '0.8.15' }];
+    const published = (list) => ({ commit: 'abc', components: list.map(([id, version]) => ({ id, version })) });
+    assert.deepStrictEqual(rewrittenBehind(published([['waze-on-cluster', '0.14.1901'], ['robertn_waze_cluster', '0.6.1801'],
+        ['cluster-render', '0.8.14']]), tree), [], 'older or equal published versions: nothing taken back');
+    assert.deepStrictEqual(rewrittenBehind(published([['waze-on-cluster', '0.14.2101'], ['cluster-render', '0.8.15']]), tree), [],
+        'the same versions: nothing taken back');
+    assert.deepStrictEqual(rewrittenBehind(published([['waze-on-cluster', '0.14.2102'], ['cluster-render', '0.9.0']]), tree),
+        ['waze-on-cluster 0.14.2102 > 0.14.2101', 'cluster-render 0.9.0 > 0.8.15'], 'newer published versions named');
+    assert.deepStrictEqual(rewrittenBehind(published([['gone', '9.9.9']]), tree), [], 'a component no longer in the tree: not counted');
+    assert.deepStrictEqual(rewrittenBehind({ commit: 'abc' }, tree), [], 'a catalog without components');
 });
 
 test('unmetRequires: same-repo requirements must be met; external catalog components like mgu-deploy are allowed', () => {

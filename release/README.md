@@ -87,7 +87,11 @@ so the car finds every release as an update. A component the fork did not
 change keeps the followed repository's version and plain tag, and is
 published too when the fork's catalog lacks it (any at its first publish).
 When upstream's version is merged in, its version line may conflict with
-the fork's: take upstream's, and the next release counts from it.
+the fork's: take upstream's, and the next release counts from it. A fork
+that rebases on upstream and force-pushes rewrites the published catalog's
+commit out of its history: it still publishes while no published version
+is newer than the tree's (nothing would be taken back), and names those
+that are otherwise.
 
 **Publishing.** Run `.github/workflows/release.yml` by hand (Actions,
 Release) on `main`, with the component ids or none for every changed one.

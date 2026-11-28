@@ -890,6 +890,17 @@ function unmetRequires(uploads, current, known) {
     return unmet;
 }
 
+/* The published components whose version is newer than the one the tree
+ * has (all: the repository's components), as "id published > tree": what a
+ * publish from a history without the catalog's commit would take back. A
+ * component no longer in the tree leaves the catalog, as on any publish. */
+function rewrittenBehind(published, all) {
+    const tree = new Map(all.map((c) => [c.id, c.version]));
+    return (published.components || [])
+        .filter((e) => tree.has(e.id) && compareVersions(tree.get(e.id), e.version) < 0)
+        .map((e) => `${e.id} ${e.version} > ${tree.get(e.id)}`);
+}
+
 function cmdPublish(ids, dryRun, stamped) {
     if (git(['status', '--porcelain', '--untracked-files=no'])) {
         throw new Error('commit first: publish builds HEAD and records its commit in the catalog');
@@ -902,8 +913,17 @@ function cmdPublish(ids, dryRun, stamped) {
     // old tag) would take back what later commits published
     if (published.commit && cp.spawnSync('git', ['merge-base', '--is-ancestor', published.commit, 'HEAD'],
         { cwd: REPO }).status !== 0) {
-        throw new Error(`HEAD does not contain ${published.commit}, the published catalog's commit: ` +
-            'publish from that commit or a later one');
+        // a fork rebased on the followed repository and force-pushed has
+        // rewritten that commit away: it publishes when no published version
+        // is newer than HEAD's, so nothing is taken back
+        const behind = rewrittenBehind(published, components());
+        if (!forkMode() || behind.length) {
+            throw new Error(`HEAD does not contain ${published.commit}, the published catalog's commit: ` +
+                'publish from that commit or a later one' +
+                (forkMode() ? ` (published newer than HEAD: ${behind.join(', ')})` : ''));
+        }
+        console.log(`release: HEAD does not contain ${published.commit}, the published catalog's commit ` +
+            '(a fork\'s rewritten history); no published version is newer than HEAD\'s: publishing');
     }
     const current = new Map(published.components.map((e) => [e.id, e]));
     // the catalog lists what the repository has: a component removed from it
@@ -1024,4 +1044,4 @@ if (require.main === module) {
 }
 
 module.exports = { components, catalogTexts, retext, compareVersions, unmetRequires, catalogEntry, exportHead, bumpVersion, releaseChangelog,
-    unreleasedOf, plan, writePlan, prLabels };
+    unreleasedOf, plan, writePlan, prLabels, rewrittenBehind };
