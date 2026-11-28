@@ -191,6 +191,8 @@ struct Decoder::State {
     VADisplay va = nullptr;
     mfxSession session = nullptr;
     uint32_t out_w = 0, out_h = 0;   /* requested; 0 = the stream's size */
+    uint32_t wide_w = 0, wide_h = 0; /* a sequence of this size comes out at it (set_wide) */
+    bool wide = false;               /* the current sequence is one: always whole, never a part */
     SourceCrop crop;
     uint16_t seen_w = 0, seen_h = 0; /* the picture size last logged */
     /* The size of the sequence the last SPS started, as DecodeHeader reads
@@ -420,6 +422,19 @@ void Decoder::State::access_unit(const AccessUnit &au, const FrameSink &cb)
         seq_w = read ? par.mfx.FrameInfo.CropW : 0;
         seq_h = read ? par.mfx.FrameInfo.CropH : 0;
     }
+    /* A wide sequence ends at an SPS of another size, even a compatible one:
+     * its pictures would come out stretched to the wide size. */
+    if (running && au.sps && wide) {
+        mfxVideoParam par;
+        if (read_header(au, &par) >= MFX_ERR_NONE) {
+            uint32_t x = 0, y = 0, sw = par.mfx.FrameInfo.CropW, sh = par.mfx.FrameInfo.CropH;
+            crop_picture(crop, &x, &y, &sw, &sh);
+            if (sw != wide_w || sh != wide_h) {
+                decode(nullptr, cb);
+                stop(true);
+            }
+        }
+    }
 
     for (int attempt = 0; attempt < 2; attempt++) {
         if (!running) {
@@ -498,8 +513,12 @@ bool Decoder::State::start(const AccessUnit &au)
     vpp.IOPattern = MFX_IOPATTERN_IN_OPAQUE_MEMORY | MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
     vpp.vpp.In = in;
     const bool cropped = crop_picture(crop, &vpp.vpp.In.CropX, &vpp.vpp.In.CropY, &vpp.vpp.In.CropW, &vpp.vpp.In.CropH);
-    w = out_w ? out_w : cropped ? crop.w : in.CropW;
-    h = out_h ? out_h : cropped ? crop.h : in.CropH;
+    const uint32_t pic_w = cropped ? crop.w : in.CropW, pic_h = cropped ? crop.h : in.CropH;
+    wide = wide_w && pic_w == wide_w && pic_h == wide_h;
+    w = wide ? wide_w : out_w ? out_w : pic_w;
+    h = wide ? wide_h : out_h ? out_h : pic_h;
+    if (wide)
+        log_info("decoder: sequence %ux%u, the whole cluster's layout: decoded at its own size", pic_w, pic_h);
     full_w = w;
     full_h = h;
     part = part_refused = OutputPart();   /* VPP set up whole below; a part at the first picture */
@@ -823,7 +842,9 @@ bool Decoder::State::run_vpp(mfxFrameSurface1 *in, const FrameSink &cb)
  * not make it in this sequence. */
 void Decoder::State::use_part()
 {
-    const OutputPart p = part_wanted;
+    /* a wide sequence's parts would be of another output than the one asked
+     * for (the map slot's): whole */
+    const OutputPart p = wide ? OutputPart() : part_wanted;
     if (p == part || (p.set() && p == part_refused))
         return;
     std::string why;
@@ -937,6 +958,8 @@ bool Decoder::init(const char *dev, uint32_t out_w, uint32_t out_h, unsigned lev
     s->level_bits = level_bits;
     s->gpu_copy = gpu_copy;
     s->crop = crop;
+    s->wide_w = wide_w_;
+    s->wide_h = wide_h_;
     s->part_wanted = part_;
     s->sps_sink = &sps_sink_;
 
@@ -1031,6 +1054,18 @@ void Decoder::set_part(const OutputPart &p)
     part_ = p;
     if (s_)
         s_->part_wanted = p;
+}
+
+void Decoder::set_wide(uint32_t w, uint32_t h)
+{
+    if (w % 2 || h % 2 || !w != !h)
+        w = h = 0;
+    wide_w_ = w;
+    wide_h_ = h;
+    if (s_) {
+        s_->wide_w = w;
+        s_->wide_h = h;
+    }
 }
 
 bool Decoder::picture_skipped(const FrameSink &cb, std::string *err)

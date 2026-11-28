@@ -44,6 +44,7 @@
 #include "map_feed.h"
 #include "map_feeds.h"
 #include "map_geometry.h"
+#include "map_holes.h"
 #include "map_state.h"
 #include "refused.h"
 #include "video_producer.h"
@@ -80,6 +81,7 @@ std::string status_line(const FeedStatus &s)
            ",\"hud_width_pct\":" + std::to_string(s.hud_width_pct) +
            ",\"hud_x\":" + std::to_string(s.hud_offset_x) + ",\"hud_y\":" + std::to_string(s.hud_offset_y) +
            ",\"hud_keep_shown\":" + (s.hud_keep_shown ? "1" : "0") +
+           ",\"fullscreen\":" + (s.fullscreen ? "1" : "0") +
            /* only while hosted: otherwise the line is as it always was */
            (s.hosted ? ",\"hosted\":1" : "") + "}";
 }
@@ -91,7 +93,9 @@ public:
 
     /* cluster and hud turn the map on each off or on ("on"), hud also sizes
      * and places the HUD's; the map itself comes and goes with the stream.
-     * guide is the app's switch for BMW's turn box (guide_setting.h). */
+     * fullscreen moves the cluster map between its slot and the whole
+     * cluster (map_feeds.h "Fullscreen"). guide is the app's switch for
+     * BMW's turn box (guide_setting.h). */
     void on_command(const std::map<std::string, std::string> &msg) override
     {
         const std::string &cmd = msg.at("cmd");
@@ -104,6 +108,8 @@ public:
             feeds_->set_guide_hold(guide_->hide());
         } else if (cmd == "cluster" && on != msg.end() && (on->second == "0" || on->second == "1")) {
             feeds_->set_cluster(on->second == "1");
+        } else if (cmd == "fullscreen" && on != msg.end() && (on->second == "0" || on->second == "1")) {
+            feeds_->set_fullscreen(on->second == "1");
         } else if (cmd == "hud" && (on != msg.end() || pct != msg.end() || hx != msg.end() || hy != msg.end() ||
                                     keep != msg.end())) {
             if (on != msg.end()) {
@@ -198,11 +204,31 @@ int serve(Config cfg)
     }
     if (const char *why = parse_source_crop(cfg.str("src_crop"), &vc.src_crop))
         log_warn("src_crop = %s is ignored: %s; the whole picture is the map", cfg.str("src_crop").c_str(), why);
+    /* wide_size: a sequence of exactly this size (the phone's layout for the
+     * whole cluster, the patch's IC_MID) decoded at its own size (MapFeed
+     * "Wide pictures"); empty: none. */
+    if (!cfg.str("wide_size").empty()) {
+        unsigned ww = 0, wh = 0;
+        const char *why = !cfg.size("wide_size", &ww, &wh)                 ? "must be WxH, or empty"
+                          : ww % 4 || wh % 4                              ? "must be multiples of 4"
+                          : ww > 1920 || wh > 720                         ? "must be at most 1920x720"
+                          : ww < vc.tex_width || wh < vc.tex_height       ? "must be at least tex_size"
+                          : ww == vc.tex_width && wh == vc.tex_height     ? "is tex_size"
+                                                                          : nullptr;
+        if (why) {
+            log_warn("wide_size = %s is ignored: %s; every picture at tex_size", cfg.str("wide_size").c_str(), why);
+        } else {
+            vc.wide_width = ww;
+            vc.wide_height = wh;
+        }
+    }
     struct Range { const char *key; long lo, hi; } ranges[] = {
         {"dirty_threshold", 0, 64}, {"dirty_settle_ms", 0, 3600000}, {"tex_level_bits", 0, 3},
         {"target_fps", 0, 60},      {"picture_fps", 0, 60},          {"pan_blocks", 0, 1},
         {"stall_ms", 1000, 600000},
         {"cluster", 0, 1},          {"hud", 0, 1},                   {"hud_fps", 1, 30},
+        {"fullscreen", 0, 1},       {"fullscreen_stretch", 0, 1},    {"fullscreen_full_res", 0, 1},
+        {"fullscreen_hole_feather", 0, 64},
         {"hud_width_pct", 0, 100},  {"hud_offset_x", -800, 800},     {"hud_offset_y", -800, 800},
         {"hud_scale_down", 0, 1},   {"hud_round_corners", 0, 1},     {"hud_black_background", 0, 1},
         {"hud_keep_shown", 0, 1},
@@ -256,6 +282,7 @@ int serve(Config cfg)
     fc.hud_offset_x = (int)cfg.num("hud_offset_x");
     fc.hud_offset_y = (int)cfg.num("hud_offset_y");
     fc.hud_keep_shown = cfg.num("hud_keep_shown") != 0;
+    fc.fullscreen_stretch = cfg.num("fullscreen_stretch") == 1;
     fc.scale_down = cfg.num("hud_scale_down") != 0;
     fc.hud_round_corners = cfg.num("hud_round_corners") != 0;
     fc.hud_black_background = cfg.num("hud_black_background") != 0;
@@ -263,6 +290,32 @@ int serve(Config cfg)
     if (fc.vpp_scale)
         log_info("hosted_vpp_scale: a host's part of the map is cropped and scaled by VPP, on the GPU");
     fc.always_packed = cfg.num("always_packed") == 1;
+    fc.fullscreen_full_res = cfg.num("fullscreen_full_res") == 1;
+    {
+        std::string why;
+        if (parse_holes(cfg.str("fullscreen_holes"), &fc.holes, &why))
+            log_warn("fullscreen_holes is ignored: %s; the fullscreen map covers the gauges whole", why.c_str());
+        fc.hole_feather = (unsigned)cfg.num("fullscreen_hole_feather");
+    }
+    if (vc.wide_width) {
+        const char *why = parse_map_rect(cfg.str("wide_crop"), &fc.wide_crop);
+        const MapRect &c = fc.wide_crop;
+        if (!why && c.set() && (c.w != vc.tex_width || c.h != vc.tex_height))
+            why = "its size must be tex_size";
+        else if (!why && c.set() && (!c.fits(vc.wide_width, vc.wide_height) || c.x % 2 || c.y % 2))
+            why = "must be inside wide_size, at an even X and Y";
+        if (why) {
+            log_warn("wide_crop = %s is ignored: %s; the picture's centre", cfg.str("wide_crop").c_str(), why);
+            fc.wide_crop = MapRect();
+        }
+        char at[32] = "centred";
+        if (fc.wide_crop.set())
+            std::snprintf(at, sizeof at, "at %u,%u", fc.wide_crop.x, fc.wide_crop.y);
+        log_info("waze: %ux%u pictures (the whole cluster's layout) at their own size: the map's %ux%u of them %s, "
+                 "fullscreen the whole picture%s",
+                 vc.wide_width, vc.wide_height, vc.tex_width, vc.tex_height, at,
+                 fc.fullscreen_full_res ? "" : " scaled to tex_size");
+    }
     if (fc.always_packed)
         log_info("always_packed: every update of the cluster map as packed 4x4 blocks");
     fc.scaled_level_bits = vc.tex_level_bits;
@@ -290,7 +343,8 @@ int serve(Config cfg)
 
     std::string err;
     VideoProducer producer(vc);
-    MapFeeds feed(fc, cfg.num("cluster") == 1, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"));
+    MapFeeds feed(fc, cfg.num("cluster") == 1, cfg.num("hud") == 1, (unsigned)cfg.num("hud_fps"),
+                  cfg.num("fullscreen") == 1);
     Server server(&feed, &guide);
     Control control(&server);
     server.set_control(&control);
@@ -337,7 +391,10 @@ int serve(Config cfg)
         uint64_t id = 0;
         bool same = false;
         OutputPart part;
-        if (producer.take(&frame, &id, &same, &part)) {
+        uint32_t fw = 0, fh = 0;
+        if (producer.take(&frame, &id, &same, &part, &fw, &fh)) {
+            if (!part.set())
+                feed.set_source(fw, fh);   /* the map's frame, or a wide picture */
             if (same)
                 feed.repeat(id, now);
             else if (part.set())
@@ -536,6 +593,13 @@ void define_keys(Config *cfg)
     cfg->define("map_state_file", "/var/opt/waze-on-cluster/map.state.conf");
     cfg->define("features_file", "/var/opt/waze-on-cluster/features.conf");
     cfg->define("cluster", "1");
+    cfg->define("fullscreen", "0");
+    cfg->define("fullscreen_stretch", "0");
+    cfg->define("fullscreen_full_res", "1");
+    cfg->define("fullscreen_holes", "");
+    cfg->define("fullscreen_hole_feather", "12");
+    cfg->define("wide_size", "1920x720");
+    cfg->define("wide_crop", "422,134,1088,480");
     cfg->define("hud", "0");
     cfg->define("hud_fps", "10");
     cfg->define("hud_width_pct", "0");

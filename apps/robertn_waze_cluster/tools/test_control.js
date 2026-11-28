@@ -141,6 +141,32 @@ test('A unit on the older mid-panel patch is prompted to CarPlay\'s Patch button
     c.close();
 });
 
+test('fullscreen (patchd\'s panel_wanted mid): the high-panel patch is prompted, Patch applies the whole cluster\'s; in the map slot again, high as before', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedPatch());
+    patch.res = SIZE;
+    patch.safe = SAFE;
+    patch.panelWanted = 'mid';
+    patch.announce('patched', 'high', null);
+    await until('update to mid', () => c.statusText() === 'Status: Update needed' && c.canEnable());
+    c.enableMap();
+    await until('apply mid', () => patch.count('apply') === 1 && !patch.busy);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'apply'), [{ cmd: 'apply', panel: 'mid', mode: 'avb' }]);
+    assert.deepStrictEqual([patch.panel, patch.res, patch.safe], ['mid', null, null]);
+    await until('patched mid', () => c.statusText() === 'Status: Patched' && !c.canEnable());
+    /* fullscreen off: the mid patch is the older one, Patch applies high, as upstream */
+    patch.panelWanted = 'high';
+    patch.announce('patched', 'mid', null);
+    await until('update to high', () => c.statusText() === 'Status: Update needed' && c.canEnable());
+    c.enableMap();
+    await until('apply high', () => patch.count('apply') === 2 && !patch.busy);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'apply')[1], { cmd: 'apply', panel: 'high', mode: 'avb' });
+    assert.deepStrictEqual([patch.panel, patch.res, patch.safe], ['high', SIZE, SAFE]);
+    await until('patched high', () => c.statusText() === 'Status: Patched' && !c.canEnable());
+    c.close();
+});
+
 test('the map follows the stream; the app sends the render nothing for it', async (render, patch) => {
     const c = control();
     const seen = [];
@@ -465,6 +491,36 @@ test('the HUD map over BMW\'s pop-ups: gives way by default; a flip goes to the 
     render.hudKeep = null;
     render.announce(render.state, render.reason);
     await until('a render without it', () => c.hudKeepShown() === null && !c.canKeepHud());
+    c.close();
+});
+
+test('cluster fullscreen: off by default; a flip goes to the render and patchd, the tick follows the render\'s achieved status; ' +
+    'greyed while the map is off the cluster and for a render without it', async (render, patch) => {
+    const c = control();
+    c.open();
+    await until('connected', () => c.connectedRender() && c.connectedPatch());
+    render.stream(true);
+    await until('the render has said', () => c.renderStatus && c.clusterOn() === true);
+    assert.deepStrictEqual([c.fullscreenOn(), c.canChooseFullscreen()], [false, true], 'in the map slot, offered');
+    render.cluster = 0; patch.map.cluster = 0;
+    render.announce(render.state, render.reason);
+    await until('the map off the cluster', () => c.clusterOn() === false);
+    assert.strictEqual(c.canChooseFullscreen(), false, 'greyed while the map is off the cluster');
+    c.toggleFullscreen();
+    assert.strictEqual(render.received.filter((m) => m.cmd === 'fullscreen').length, 0, 'nothing sent while greyed');
+    render.cluster = 1; patch.map.cluster = 1;
+    render.announce(render.state, render.reason);
+    await until('on the cluster again', () => c.canChooseFullscreen());
+    c.toggleFullscreen();
+    await until('over the whole cluster', () => c.fullscreenOn() === true && render.fullscreen === 1);
+    await until('saved', () => patch.map.fullscreen === 1);
+    c.toggleFullscreen();
+    await until('in its slot again', () => c.fullscreenOn() === false && patch.map.fullscreen === 0);
+    assert.deepStrictEqual(render.received.filter((m) => m.cmd === 'fullscreen'), [{ cmd: 'fullscreen', on: '1' }, { cmd: 'fullscreen', on: '0' }]);
+    assert.deepStrictEqual(patch.received.filter((m) => m.cmd === 'fullscreen'), [{ cmd: 'fullscreen', on: 1 }, { cmd: 'fullscreen', on: 0 }]);
+    render.fullscreen = null;
+    render.announce(render.state, render.reason);
+    await until('a render without it', () => c.fullscreenOn() === null && !c.canChooseFullscreen());
     c.close();
 });
 

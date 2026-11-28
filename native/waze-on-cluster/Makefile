@@ -51,8 +51,8 @@ VERSION := $(shell sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' component.json)
 
 # The capture, decode and map feed (own files), the kit's atlas, packing and
 # geometry, and the shared renderer's client.
-WOC_SRC = src/main.cpp src/refused.cpp src/video_producer.cpp src/freeze_watch.cpp src/alt_screen.cpp src/map_feed.cpp src/map_feeds.cpp src/atlas_scale.cpp src/control.cpp src/h264_source.cpp \
-          src/guide_setting.cpp src/map_state.cpp src/opt_in.cpp \
+WOC_SRC = src/main.cpp src/refused.cpp src/video_producer.cpp src/freeze_watch.cpp src/alt_screen.cpp src/map_feed.cpp src/map_feeds.cpp src/map_holes.cpp src/atlas_scale.cpp src/control.cpp \
+          src/h264_source.cpp src/guide_setting.cpp src/map_state.cpp src/opt_in.cpp \
           src/udp_source.cpp src/avb_source.cpp src/framing_probe.cpp src/rtp_h264.cpp src/sps_info.cpp \
           src/decoder_msdk.cpp src/nal_reader.cpp src/stream_health.cpp $(KIT)/map_geometry.cpp $(KIT)/yuv_atlas.cpp \
           $(KIT)/block_pack.cpp
@@ -67,7 +67,7 @@ CPP_TESTS = $(BUILD)/host/nal_reader_test $(BUILD)/host/rtp_h264_test $(BUILD)/h
 		$(BUILD)/host/stream_health_test $(BUILD)/host/source_crop_test \
 		$(BUILD)/host/map_rect_test $(BUILD)/host/guide_setting_test $(BUILD)/host/decoder_test \
 		$(BUILD)/host/map_state_test $(BUILD)/host/opt_in_test $(BUILD)/host/atlas_scale_test $(BUILD)/host/sps_info_test \
-		$(BUILD)/host/picture_pace_test
+		$(BUILD)/host/picture_pace_test $(BUILD)/host/map_holes_test
 # The control socket (accept4) and the producer (pipe2) are Linux's: built and run on Linux only
 # (make test-x86).
 LINUX_TESTS = $(if $(filter Linux,$(shell uname -s)),$(BUILD)/host/refused_test $(BUILD)/host/video_producer_test)
@@ -180,7 +180,7 @@ CR_CORE = $(filter-out $(addprefix $(CR)/src/,main.cpp settings.cpp graph_ramses
 # Each of its sources compiles once, with its header dependencies.
 MF       = $(BUILD)/host/map_feed
 MF_FLAGS = $(CXXFLAGS) -Isrc -I$(KIT) -I$(CR)/include -I$(CR) -I$(CR)/src -isystem $(CR)/dcsm/third_party/vsomeip/interface
-MF_SRC   = test/map_feed_test.cpp src/map_feed.cpp src/map_feeds.cpp src/atlas_scale.cpp src/freeze_watch.cpp $(filter-out $(CR)/client/protocol.cpp,$(CR_CORE)) $(CR_SRC) \
+MF_SRC   = test/map_feed_test.cpp src/map_feed.cpp src/map_feeds.cpp src/map_holes.cpp src/atlas_scale.cpp src/freeze_watch.cpp $(filter-out $(CR)/client/protocol.cpp,$(CR_CORE)) $(CR_SRC) \
            $(CR)/src/log.cpp
 
 # objects of sources in this tree under <dir>/, of the shared renderer's under <dir>/cr/
@@ -236,6 +236,10 @@ $(BUILD)/host/refused_test: test/refused_test.cpp src/refused.cpp src/refused.h 
 $(BUILD)/host/guide_setting_test: test/guide_setting_test.cpp src/guide_setting.cpp src/guide_setting.h $(CR)/src/log.cpp
 	mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -Isrc -I$(CR)/src -o $@ test/guide_setting_test.cpp src/guide_setting.cpp $(CR)/src/log.cpp -lpthread
+
+$(BUILD)/host/map_holes_test: test/map_holes_test.cpp src/map_holes.cpp src/map_holes.h
+	mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -Isrc -o $@ test/map_holes_test.cpp src/map_holes.cpp
 
 $(BUILD)/host/map_state_test: test/map_state_test.cpp src/map_state.cpp src/map_state.h $(CR)/src/config.cpp $(CR)/src/log.cpp
 	mkdir -p $(@D)

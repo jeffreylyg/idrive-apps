@@ -48,9 +48,9 @@ function until(what, check, ms) {
         poll();
     });
 }
-/* keep left out: a patchd before hud_keep_shown */
-const settings = (cluster, hud, pct, x, y, keep) => Object.assign({ cluster, hud, hud_width_pct: pct, hud_offset_x: x, hud_offset_y: y },
-    keep === undefined ? {} : { hud_keep_shown: keep });
+/* keep left out: a patchd before hud_keep_shown; full left out: one before fullscreen */
+const settings = (cluster, hud, pct, x, y, keep, full) => Object.assign({ cluster, hud, hud_width_pct: pct, hud_offset_x: x, hud_offset_y: y },
+    keep === undefined ? {} : { hud_keep_shown: keep }, full === undefined ? {} : { fullscreen: full });
 
 let passed = 0;
 async function check(name, fn) {
@@ -445,6 +445,11 @@ async function main() {
     await check('a patchd before hud_keep_shown: the render not told it', async () => {
         assert.deepStrictEqual(renderCommands(settings(1, 0, 0, 0, 0))[2], { cmd: 'hud', hud_width_pct: '0', hud_x: '0', hud_y: '0' });
     });
+    await check('fullscreen saved: the render told it before the displays; a patchd before fullscreen: not told it', async () => {
+        assert.deepStrictEqual(renderCommands(settings(1, 0, 0, 0, 0, 0, 1)).map((m) => m.cmd), ['fullscreen', 'cluster', 'hud', 'hud']);
+        assert.deepStrictEqual(renderCommands(settings(1, 0, 0, 0, 0, 0, 1))[0], { cmd: 'fullscreen', on: '1' });
+        assert(!renderCommands(settings(1, 0, 0, 0, 0, 0)).some((m) => m.cmd === 'fullscreen'), 'no key, no command');
+    });
     sync2.stop();
     c.close();
 
@@ -457,7 +462,7 @@ async function main() {
     const sync5 = new ProfileSync({ control: page, readProfile: () => (readFails ? Promise.reject(new Error('timeout')) : Promise.resolve(who)),
         patchPath: PSOCK, renderPath: RSOCK, pollMs: 600000, replyMs: 200, log: quiet() });
     page.setWriteTarget(() => sync5.writeTarget(), (w) => sync5.confirmWrite(w), () => sync5.loading());
-    const mapWrites = () => patch.received.filter((m) => ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown'].includes(m.cmd));
+    const mapWrites = () => patch.received.filter((m) => ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown', 'fullscreen'].includes(m.cmd));
     /* G with its own settings (both), the shared ones both; G in effect */
     const setUp = async () => {
         sync5.stop();

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+Cluster fullscreen, a checkbox under Show on, unticked by default: the
+cluster map over the whole cluster instead of the central map area. The
+gauges are covered while it is on, so use it parked or where you do not
+need them; the warning lights stay visible. The tick appears once the map
+actually covers the cluster, and the checkbox is greyed while the map is
+off the cluster or the installed tool is an older one. Saved per driver
+profile. Requires the next waze-on-cluster.
+
+With Cluster fullscreen on, CarPlay's patch gives the phone the whole
+cluster's layout (1920x720, BMW's own safe area), so the map, the turn card
+and the arrival-time card are where CarPlay puts them on a cluster with a
+built-in map, at full resolution. Off, the patch is the central map area's,
+as before. Ticking or unticking it moves the patch: CarPlay restarts and
+the phone reconnects, or where CarPlay cannot be restarted, after a
+head-unit restart. Not yet tried on a car: if CarPlay keeps failing to
+start with the whole cluster's layout, boot recovery puts the central map
+area's patch back. Requires the next waze-on-cluster.
+
 ## 0.6.19
 
 The app uses less background CPU and memory, loads translations only for the active language, and generates the Logs QR code faster.

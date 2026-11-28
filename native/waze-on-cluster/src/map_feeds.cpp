@@ -8,13 +8,44 @@
 
 namespace woc {
 
-MapFeeds::MapFeeds(const FeedConfig &base, bool cluster, bool hud, unsigned hud_fps)
-    : base_(base), hud_fps_(hud_fps), cluster_on_(cluster), hud_on_(hud)
+MapFeeds::MapFeeds(const FeedConfig &base, bool cluster, bool hud, unsigned hud_fps, bool fullscreen)
+    : base_(base), hud_fps_(hud_fps), cluster_on_(cluster), hud_on_(hud), fullscreen_(fullscreen),
+      src_w_(base.video.w), src_h_(base.video.h)
 {
     base_.target = "map";
     if (base_.hud_width_pct > kHudMaxPct)
         base_.hud_width_pct = kHudMaxPct;
     follow();
+}
+
+FeedConfig MapFeeds::cluster_config() const
+{
+    FeedConfig fc = base_;
+    if (fullscreen_) {
+        fc.target = "panel";
+        fc.rect = MapRect();   /* map_rect is the map slot's */
+    }
+    return fc;
+}
+
+std::unique_ptr<MapFeed> MapFeeds::make_feed(const FeedConfig &fc) const
+{
+    std::unique_ptr<MapFeed> f(new MapFeed(fc));
+    f->set_source(src_w_, src_h_);
+    f->set_stream(live_, frozen_, picture_);
+    return f;
+}
+
+void MapFeeds::set_source(uint32_t w, uint32_t h)
+{
+    if (!w || !h || (w == src_w_ && h == src_h_))
+        return;
+    src_w_ = w;
+    src_h_ = h;
+    copy_.clear();
+    for (MapFeed *f : {cluster_.get(), hud_.get()})
+        if (f)
+            f->set_source(w, h);
 }
 
 void MapFeeds::follow()
@@ -31,8 +62,7 @@ void MapFeeds::follow()
         fc.video.pan_blocks = false;
         fc.vpp_scale = false;   /* the HUD scales whole frames */
         fc.always_packed = false;   /* and goes exact (cluster map only) */
-        hud_.reset(new MapFeed(fc));
-        hud_->set_stream(live_, frozen_, picture_);
+        hud_ = make_feed(fc);
         hud_->changed(id_);
         log_info("hud: on, at most %u frames a second", hud_fps_);
     }
@@ -40,8 +70,7 @@ void MapFeeds::follow()
         /* off, its connection closes: the renderer drops its layer and the
          * KOMBI shows its own content again */
         if (cluster_on_) {
-            cluster_.reset(new MapFeed(base_));
-            cluster_->set_stream(live_, frozen_, picture_);
+            cluster_ = make_feed(cluster_config());
             if (hud_ && hud_->latest(&copy_))
                 cluster_->hold(&copy_, id_);
         } else {
@@ -50,6 +79,18 @@ void MapFeeds::follow()
             cluster_.reset();
         }
         log_info("cluster: %s", cluster_on_ ? "on" : "off");
+    } else if (cluster_ && cluster_->target() != (fullscreen_ ? "panel" : "map")) {
+        /* The fullscreen setting moved the cluster's feed to the other
+         * target: the new feed first, started from the newest picture, then
+         * the old one goes with its connection (the renderer draws the map
+         * and the panel apart, so both up for a moment is fine). */
+        FeedConfig fc = cluster_config();
+        fc.show_held_at_once = true;
+        std::unique_ptr<MapFeed> next = make_feed(fc);
+        if (cluster_->latest(&copy_) || (hud_ && hud_->latest(&copy_)))
+            next->hold(&copy_, id_);
+        cluster_ = std::move(next);
+        log_info("cluster: the map %s", fullscreen_ ? "over the whole cluster (panel)" : "in its map slot");
     }
     if (!hud_on_ && hud_) {
         /* its connection closes: the renderer drops its layer and lets the
@@ -69,6 +110,12 @@ void MapFeeds::set_cluster(bool on)
 void MapFeeds::set_hud(bool on)
 {
     hud_on_ = on;
+    follow();
+}
+
+void MapFeeds::set_fullscreen(bool on)
+{
+    fullscreen_ = on;
     follow();
 }
 
@@ -150,6 +197,14 @@ void MapFeeds::poll(int64_t now_ms)
         cluster_->poll(now_ms);
     if (hud_)
         hud_->poll(now_ms);
+    /* A renderer whose hello has no panel (its hello is the truth): the map
+     * back in its slot; the saved setting is untouched and tried again at
+     * the next start. */
+    if (fullscreen_ && cluster_ && cluster_->target() == "panel" && cluster_->target_absent()) {
+        log_warn("fullscreen: the cluster renderer has no panel target; the map stays in its map slot");
+        fullscreen_ = false;
+        follow();
+    }
     feed_hud(now_ms);
 }
 
@@ -236,6 +291,8 @@ FeedStatus MapFeeds::status(const std::string &decode, const std::string &stream
     }
     s.hud_width_pct = base_.hud_width_pct;
     s.hud_keep_shown = base_.hud_keep_shown;
+    /* achieved: 1 only while the cluster's feed is on the panel */
+    s.fullscreen = cluster_ && cluster_->target() == "panel";
     s.hud_offset_x = hud_ ? hud_->hud_offset_x() : base_.hud_offset_x;
     s.hud_offset_y = hud_ ? hud_->hud_offset_y() : base_.hud_offset_y;
     return s;

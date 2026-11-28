@@ -56,6 +56,24 @@
  *   HUD's slots and the turn box's hold released, the stock map and box
  *   shown again, nothing asked of the renderer while off; the cluster, or
  *   both, again: the next frame shown, the hold back;
+ * - Fullscreen (fullscreen_map): the cluster's map on the whole-cluster
+ *   panel, fitted to its height and centred or stretched over all of it,
+ *   from the start and switched at runtime, the newest picture carried
+ *   over both ways; a renderer whose hello has no panel keeps the map in
+ *   its slot and the status never says fullscreen; saved but inert while
+ *   the cluster is off, and the cluster turned on then starts on the panel;
+ * - wide pictures (wide_map; map_feed.h "Wide pictures"): 1920x720
+ *   pictures, the phone's layout for the whole cluster: in the map slot
+ *   their wide_crop cut out 1:1; fullscreen the whole picture over the whole
+ *   panel at its own size, the newest carried over both ways, or with
+ *   fullscreen_full_res 0 scaled to the map's frame; 1088x480 pictures
+ *   again: fitted to the panel's height as before; on the HUD the wide_crop
+ *   scaled to the size it is shown at; hosted with hosted_vpp_scale on, no
+ *   part asked of the decoder, the host's part of the wide_crop cut out by
+ *   the worker; with fullscreen_holes, an effect layer just over the
+ *   fullscreen map samples their mask (half the panel's size) and takes
+ *   that much of the map's colour and alpha away, shown and hidden with the
+ *   map, gone with it in the map slot;
  * - hosted by another app's scene (hosting): the map in its scene at the
  *   host's rect with the host's part of the picture, its own slot released;
  *   hidden by the host, no layer and nothing sent; shown again; the host
@@ -107,6 +125,7 @@
 /* cluster-render's service and fakes, from its tree (-I$(CR)) */
 #include "src/service.h"
 #include "src/video_layer.h"
+#include "src/layer.h"
 #include "block_pack.h"
 #include "cluster_render/protocol.h"
 #include "test/fake_graph.h"
@@ -115,6 +134,7 @@
 #include "src/log.h"
 #include "../src/map_feeds.h"
 #include "../src/atlas_scale.h"
+#include "../src/map_holes.h"
 
 using namespace woc;
 
@@ -1473,10 +1493,384 @@ static void unseen_map()
     ok("MapFeeds: neither: not unseen (no pictures at all)", !feeds.unseen() && !feeds.wants_frames());
 }
 
+/* Cluster fullscreen (map_feeds.h "Fullscreen"): the cluster's map on the
+ * whole-cluster panel, fitted to its height and centred, or stretched over
+ * all of it (fullscreen_stretch); switched at runtime with the newest
+ * picture carried over, and back; a renderer whose hello has no panel
+ * keeps the map in its slot; saved but inert while the cluster is off,
+ * and a cluster turned on then starts on the panel. */
+static void fullscreen_map()
+{
+    const std::vector<uint8_t> f1 = atlas(21);
+    std::vector<uint8_t> spare;
+    const auto pump = [&spare](Rig &b, MapFeeds &feeds, int64_t ms, const std::vector<uint8_t> *frame) {
+        for (int64_t t = 0; t < ms; t += 5) {
+            b.now += 5;
+            if (frame && t % 65 == 0 && feeds.wants_frames()) {
+                spare.assign(frame->begin(), frame->end());
+                feeds.offer(&spare, (uint64_t)b.now, b.now);
+            }
+            for (int round = 0; round < 400; round++) {
+                std::vector<pollfd> fds;
+                const size_t first = b.svc->poll_fds(&fds);
+                const int n = ::poll(fds.data(), fds.size(), 0);
+                b.port.tick(b.now);
+                b.svc->after_poll(fds, first, b.now);
+                const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) ||
+                                     (feeds.hud_feed() && feeds.hud_feed()->wants_write());
+                feeds.poll(b.now);
+                if (round > 0 && n <= 0 && !pending)
+                    break;
+            }
+        }
+    };
+    /* The one layer on the target (0 the map's, 1 the panel's); null: none,
+     * or one elsewhere too. */
+    const auto layer_on = [](Rig &b, int target) -> const crs::Layer * {
+        const crs::Layer *found = nullptr;
+        for (const crs::Layer *l : b.svc->compositor().layers()) {
+            if (l->target() != target)
+                return nullptr;
+            found = l;
+        }
+        return found;
+    };
+    bool with = false;
+
+    Rig b;
+    b.feed.reset();
+    b.start();
+    FeedConfig fc;
+    fc.socket = b.path;
+    fc.video.level_bits = 0;
+    MapFeeds feeds(fc, true, false, 10, true);
+    feeds.set_stream(true, false, Picture::Shown);
+    pump(b, feeds, 2000, &f1);
+    const crs::Layer *p = layer_on(b, 1);
+    ok("fullscreen from the start: one layer on the panel, the picture fitted to its height, centred",
+       p && p->params.rect.x == 144 && p->params.rect.y == 0 && p->params.rect.w == 1632 && p->params.rect.h == 720);
+    ok("fullscreen: showing on the panel, the status achieved",
+       feeds.status("decode").state == "showing" && feeds.status("decode").target == "panel" &&
+           feeds.status("decode").fullscreen && b.drawing("panel", f1, &with) && with);
+
+    feeds.set_fullscreen(false);
+    pump(b, feeds, 2000, nullptr);   /* no new frame: the newest must carry over */
+    const crs::Layer *m = layer_on(b, 0);
+    ok("switched back at runtime: the map in its slot with the newest picture, the panel's layer gone",
+       m && m->params.rect.w == 1088 && m->params.rect.h == 480 && !feeds.status("decode").fullscreen &&
+           feeds.status("decode").target == "map" && b.drawing("map", f1, &with) && with);
+
+    feeds.set_fullscreen(true);
+    pump(b, feeds, 2000, nullptr);
+    ok("switched to fullscreen at runtime: on the panel with the newest picture",
+       layer_on(b, 1) && feeds.status("decode").fullscreen && b.drawing("panel", f1, &with) && with);
+
+    Rig s;
+    s.feed.reset();
+    s.start();
+    FeedConfig sf = fc;
+    sf.socket = s.path;
+    sf.fullscreen_stretch = true;
+    MapFeeds stretch(sf, true, false, 10, true);
+    stretch.set_stream(true, false, Picture::Shown);
+    pump(s, stretch, 2000, &f1);
+    const crs::Layer *q = layer_on(s, 1);
+    ok("fullscreen_stretch: the map over the whole 1920x720 panel",
+       q && q->params.rect.x == 0 && q->params.rect.y == 0 && q->params.rect.w == 1920 && q->params.rect.h == 720);
+
+    Rig n;
+    n.feed.reset();
+    n.sc.targets.resize(1);   /* a renderer whose hello has no panel */
+    n.start();
+    FeedConfig nf = fc;
+    nf.socket = n.path;
+    MapFeeds none(nf, true, false, 10, true);
+    none.set_stream(true, false, Picture::Shown);
+    pump(n, none, 2000, &f1);
+    ok("a renderer without the panel: the map stays in its slot, fullscreen never achieved",
+       none.status("decode").state == "showing" && none.status("decode").target == "map" &&
+           !none.status("decode").fullscreen && n.drawing("map", f1, &with) && with);
+
+    Rig o;
+    o.feed.reset();
+    o.start();
+    FeedConfig of = fc;
+    of.socket = o.path;
+    MapFeeds off(of, false, false, 10);
+    off.set_stream(true, false, Picture::Shown);
+    off.set_fullscreen(true);
+    pump(o, off, 500, &f1);
+    ok("the cluster off: fullscreen saved but inert, nothing on any target",
+       !off.wants_frames() && o.svc->compositor().layers().empty() && !off.status("decode").fullscreen);
+    off.set_cluster(true);
+    pump(o, off, 2000, &f1);
+    ok("the cluster on then: built straight on the panel",
+       layer_on(o, 1) && off.status("decode").fullscreen && o.drawing("panel", f1, &with) && with);
+}
+
+/* A 1920x720 picture (the phone's layout for the whole cluster): its pixels
+ * all differ from their neighbours'. */
+static std::vector<uint8_t> wide_atlas(int seed)
+{
+    std::vector<uint8_t> f((size_t)1920 * 1080);
+    for (size_t i = 0; i < f.size(); i++)
+        f[i] = (uint8_t)((i * 7 / 3 + (size_t)seed * 29) & 0xff);
+    return f;
+}
+
+/* The w x h part at x, y of an fw x fh atlas, as an atlas of its own. */
+static std::vector<uint8_t> part_of(const std::vector<uint8_t> &f, uint32_t fw, uint32_t fh, uint32_t x, uint32_t y,
+                                    uint32_t w, uint32_t h)
+{
+    std::vector<uint8_t> c((size_t)w * (h + h / 2));
+    for (uint32_t r = 0; r < h; r++)
+        std::copy_n(&f[(size_t)(y + r) * fw + x], w, &c[(size_t)r * w]);
+    for (uint32_t r = 0; r < h / 2; r++)
+        for (uint32_t p = 0; p < 2; p++)
+            std::copy_n(&f[(size_t)(fh + y / 2 + r) * fw + p * (fw / 2) + x / 2], w / 2, &c[(size_t)(h + r) * w + p * w / 2]);
+    return c;
+}
+
+/* An fw x fh atlas (its crop_w x crop_h part at crop_x, crop_y) scaled to
+ * dw x dh, exact levels, as the scaling worker makes it. */
+static std::vector<uint8_t> scaled_of(const std::vector<uint8_t> &f, uint32_t fw, uint32_t fh, uint32_t dw, uint32_t dh,
+                                      uint32_t cx = 0, uint32_t cy = 0, uint32_t cw = 0, uint32_t ch = 0)
+{
+    AtlasScaler s;
+    std::vector<uint8_t> out;
+    if (s.configure(fw, fh, dw, dh, 0, cx, cy, cw, ch))
+        s.scale(f.data(), &out);
+    return out;
+}
+
+static void wide_map()
+{
+    const std::vector<uint8_t> w1 = wide_atlas(1), w2 = wide_atlas(2), f1 = atlas(31);
+    std::vector<uint8_t> spare;
+    /* as the service's loop: the pictures' size, then the picture; and the
+     * scaling worker (its own thread, in real time) waited for */
+    const auto pump = [&spare](Rig &b, MapFeeds &feeds, int64_t ms, const std::vector<uint8_t> *frame,
+                               uint32_t fw = 1920, uint32_t fh = 720) {
+        for (int64_t t = 0; t < ms; t += 5) {
+            b.now += 5;
+            if (frame && t % 65 == 0 && feeds.wants_frames()) {
+                feeds.set_source(fw, fh);
+                spare.assign(frame->begin(), frame->end());
+                feeds.offer(&spare, (uint64_t)b.now, b.now);
+            }
+            for (int round = 0, waits = 0; round < 400; round++) {
+                std::vector<pollfd> fds;
+                const size_t first = b.svc->poll_fds(&fds);
+                const int n = ::poll(fds.data(), fds.size(), 0);
+                b.port.tick(b.now);
+                b.svc->after_poll(fds, first, b.now);
+                const bool pending = (feeds.cluster() && feeds.cluster()->wants_write()) ||
+                                     (feeds.hud_feed() && feeds.hud_feed()->wants_write());
+                feeds.poll(b.now);
+                const bool wait = feeds.scaling_busy() && waits < 2000;
+                if (wait) {
+                    usleep(1000);
+                    waits++;
+                    round--;
+                }
+                if (round > 0 && n <= 0 && !pending && !wait)
+                    break;
+            }
+        }
+    };
+    /* The one layer on the target (0 the map's, 1 the panel's, 2 the HUD's);
+     * null: none, or one elsewhere too. */
+    const auto layer_on = [](Rig &b, int target) -> const crs::Layer * {
+        const crs::Layer *found = nullptr;
+        for (const crs::Layer *l : b.svc->compositor().layers()) {
+            if (l->target() != target)
+                return nullptr;
+            found = l;
+        }
+        return found;
+    };
+    const auto video_of = [](const crs::Layer *l) -> const crs::VideoParams * {
+        return l && std::string(l->kind()) == "video" ? &static_cast<const crs::VideoLayer *>(l)->video() : nullptr;
+    };
+    bool with = false;
+    FeedConfig fc;
+    fc.video.level_bits = 0;
+    fc.wide_crop = MapRect{416, 136, 1088, 480};
+
+    Rig b;
+    b.feed.reset();
+    b.start();
+    fc.socket = b.path;
+    MapFeeds feeds(fc, true, false, 10, false);
+    feeds.set_stream(true, false, Picture::Shown);
+    pump(b, feeds, 2000, &w1);
+    const crs::Layer *m = layer_on(b, 0);
+    const crs::VideoParams *mv = video_of(m);
+    ok("wide pictures in the map slot: their 1088x480 at wide_crop, cut out 1:1",
+       feeds.status("decode").state == "showing" && m && m->params.rect.w == 1088 && m->params.rect.h == 480 && mv &&
+           mv->w == 1088 && mv->h == 480 && b.drawing("map", part_of(w1, 1920, 720, 416, 136, 1088, 480), &with) && with);
+
+    feeds.set_fullscreen(true);
+    pump(b, feeds, 2000, nullptr);   /* no new picture: the newest carried over */
+    const crs::Layer *p = layer_on(b, 1);
+    const crs::VideoParams *pv = video_of(p);
+    ok("wide, fullscreen: the whole picture over the whole panel at its own size, the newest carried over",
+       feeds.status("decode").fullscreen && p && p->params.rect.x == 0 && p->params.rect.y == 0 &&
+           p->params.rect.w == 1920 && p->params.rect.h == 720 && pv && pv->w == 1920 && pv->h == 720 &&
+           b.drawing("panel", w1, &with) && with);
+    pump(b, feeds, 1000, &w2);
+    ok("wide, fullscreen: the next picture whole", b.drawing("panel", w2, &with) && with);
+
+    feeds.set_fullscreen(false);
+    pump(b, feeds, 2000, nullptr);
+    ok("wide, back in the slot: the newest picture's wide_crop",
+       layer_on(b, 0) && b.drawing("map", part_of(w2, 1920, 720, 416, 136, 1088, 480), &with) && with);
+
+    feeds.set_fullscreen(true);
+    pump(b, feeds, 2000, &f1, 1088, 480);
+    p = layer_on(b, 1);
+    pv = video_of(p);
+    ok("1088x480 pictures again, fullscreen: fitted to the panel's height, 1088x480 frames",
+       p && p->params.rect.x == 144 && p->params.rect.w == 1632 && p->params.rect.h == 720 && pv && pv->w == 1088 &&
+           pv->h == 480 && b.drawing("panel", f1, &with) && with);
+    feeds.set_fullscreen(false);
+    pump(b, feeds, 1000, &w1);
+    ok("and 1920x720 pictures once more in the slot: their wide_crop",
+       layer_on(b, 0) && b.drawing("map", part_of(w1, 1920, 720, 416, 136, 1088, 480), &with) && with);
+
+    Rig l;
+    l.feed.reset();
+    l.start();
+    FeedConfig lf = fc;
+    lf.socket = l.path;
+    lf.fullscreen_full_res = false;
+    MapFeeds low(lf, true, false, 10, true);
+    low.set_stream(true, false, Picture::Shown);
+    pump(l, low, 2000, &w1);
+    const crs::Layer *lp = layer_on(l, 1);
+    const crs::VideoParams *lv = video_of(lp);
+    ok("fullscreen_full_res 0: the whole wide picture scaled to 1088x480 frames, over the whole panel",
+       lp && lp->params.rect.x == 0 && lp->params.rect.w == 1920 && lp->params.rect.h == 720 && lv && lv->w == 1088 &&
+           lv->h == 480 && l.drawing("panel", scaled_of(w1, 1920, 720, 1088, 480), &with) && with);
+
+    Rig h(false, 6000, false, true, true);
+    h.feed.reset();
+    h.start();
+    FeedConfig hf = fc;
+    hf.socket = h.path;
+    hf.hud_round_corners = hf.hud_black_background = false;
+    hf.scaled_level_bits = 0;
+    MapFeeds hud(hf, false, true, 10);
+    hud.set_stream(true, false, Picture::Shown);
+    pump(h, hud, 3000, &w1);
+    const crs::Layer *hl = layer_on(h, 2);
+    const crs::VideoParams *hv = video_of(hl);
+    ok("wide on the HUD: the wide_crop scaled to the size it is shown at",
+       hl && hv && hv->w < 1088 &&
+           h.drawing("hud", scaled_of(w1, 1920, 720, hv->w, hv->h, 416, 136, 1088, 480), &with) && with);
+
+    /* fullscreen_holes: the mask on the panel, an effect just over the
+     * map multiplying its colour and alpha by one minus it, shown and
+     * hidden with the map; none in the map slot. */
+    Rig k;
+    k.feed.reset();
+    k.start();
+    FeedConfig kf = fc;
+    kf.socket = k.path;
+    std::string why;
+    parse_holes("ring:40,40,640,640,90,200,520;rect:0,660,1920,60", &kf.holes, &why);
+    kf.hole_feather = 8;
+    MapFeeds holed(kf, true, false, 10, true);
+    holed.set_stream(true, false, Picture::Shown);
+    pump(k, holed, 2000, &w1);
+    const auto on_panel = [&k](const char *kind) -> const crs::Layer * {
+        for (const crs::Layer *l : k.svc->compositor().layers())
+            if (l->target() == 1 && std::string(l->kind()) == kind)
+                return l;
+        return nullptr;
+    };
+    const crs::Layer *pvid = on_panel("video"), *he = on_panel("effect");
+    const auto *fx = he ? static_cast<const crs::EffectLayer *>(he) : nullptr;
+    const crs::BlendState bs = fx ? fx->look().blending() : crs::BlendState();
+    ok("holes: an effect just over the fullscreen map, its colour and alpha times one minus the mask",
+       pvid && fx && he->params.z > pvid->params.z && he->params.visible && pvid->params.visible && fx->look().has_custom &&
+           bs.src == crs::BlendFactor::Zero && bs.dst == crs::BlendFactor::OneMinusSrcAlpha &&
+           bs.src_alpha == crs::BlendFactor::Zero && bs.dst_alpha == crs::BlendFactor::OneMinusSrcAlpha);
+    const std::vector<uint8_t> want = hole_mask(kf.holes, 8, 1920, 720);
+    bool mask = false, bound = false;
+    if (crs::FakeGraph *pg = k.gpu.graph("panel")) {
+        for (const auto &kv : pg->shown.buffers)
+            mask = mask || (kv.second.f == crs::TexFormat::R8 && kv.second.w == 960 && kv.second.h == 360 &&
+                            kv.second.px == want);
+        for (const auto &kv : pg->shown.quads)
+            bound = bound || (kv.second.textures.count("u_mask") && kv.second.visible);
+    }
+    ok("holes: the mask on the panel at half its size, as hole_mask makes it, sampled by the shown effect",
+       mask && bound && holed.status("decode").state == "showing" && k.drawing("panel", w1, &with) && with);
+    holed.set_stream(false, false, Picture::Shown);
+    pump(k, holed, 300, nullptr);
+    he = on_panel("effect");
+    pvid = on_panel("video");
+    ok("holes: hidden with the map when the stream ends", he && pvid && !he->params.visible && !pvid->params.visible);
+    holed.set_stream(true, false, Picture::Shown);
+    pump(k, holed, 1000, &w2);
+    he = on_panel("effect");
+    ok("holes: shown again with the map", he && he->params.visible && on_panel("video")->params.visible);
+    holed.set_fullscreen(false);
+    pump(k, holed, 2000, &w2);
+    bool slot_only = !k.svc->compositor().layers().empty();
+    for (const crs::Layer *l : k.svc->compositor().layers())
+        slot_only = slot_only && l->target() == 0 && std::string(l->kind()) == "video";
+    ok("holes: none in the map slot", slot_only);
+
+    char tmpl[] = "/tmp/woc-wide-XXXXXX";
+    const std::string root = mkdtemp(tmpl) ? tmpl : "/nonexistent";
+    const std::string file = root + "/design.scene";
+    std::ofstream(file) << "scene 0x010004f8\nnode plate -\npass main\n";
+    chmod(file.c_str(), 0644);
+    Rig r;
+    r.sc.targets[1].scene_files = true;
+    r.sc.scene_files.root = root;
+    r.sc.scene_files.owner = getuid();
+    r.start();
+    FeedConfig rf = fc;
+    rf.socket = r.path;
+    rf.vpp_scale = true;
+    r.feed.reset(new MapFeed(rf));
+    r.feed->set_source(1920, 720);
+    r.feed->set_stream(true, false, Picture::Shown);
+    r.pump(2000, &w1);
+    cr::Client design("design", r.path);
+    r.other = &design;
+    cr::SceneOptions so;
+    so.target = "panel";
+    so.file = file;
+    so.sha256 = {crs::sha256_file(file)};
+    so.layers = true;
+    const uint32_t sc = design.scene(so);
+    r.pump(500, &w1);
+    cr::Host ho;
+    ho.target = "map";
+    ho.x = 700; ho.y = 160; ho.w = 560; ho.h = 400;
+    ho.src_x = 264; ho.src_y = 40; ho.src_w = 560; ho.src_h = 400;
+    design.host(sc, ho);
+    r.pump(2500, &w1);
+    ok("wide, hosted with hosted_vpp_scale: no part asked of the decoder, the host's part of the wide_crop cut out",
+       r.st().state == "showing" && r.st().hosted && !r.feed->part().set() && r.feed->scaled_frames() > 0 &&
+           r.drawing("panel", part_of(w1, 1920, 720, 416 + 264, 136 + 40, 560, 400), &with) && with);
+    design.drop(sc);
+    r.pump(500, &w1);
+    r.other = nullptr;
+    const int removed = std::system(("rm -rf " + root).c_str());
+    (void)removed;
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, nullptr, _IONBF, 0);
+    wide_map();
+    fullscreen_map();
     hosting();
     layers_hosting();
     hosted_wake();

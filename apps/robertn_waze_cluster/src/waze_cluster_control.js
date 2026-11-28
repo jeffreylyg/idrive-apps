@@ -12,12 +12,13 @@
  *
  *   Render control socket (RENDER_PATH)
  *     app  -> tool  {"cmd":"guide","hide":0|1}  BMW's turn box hidden while the map shows, or not
- *                   {"cmd":"cluster"|"hud","on":"0"|"1"}, {"cmd":"hud","hud_width_pct"|"hud_x","hud_y"|"hud_keep_shown"}
+ *                   {"cmd":"cluster"|"hud"|"fullscreen","on":"0"|"1"}, {"cmd":"hud","hud_width_pct"|"hud_x","hud_y"|"hud_keep_shown"}
  *                    the map's settings (patchd saves them)
  *     tool -> app   {"ev":"status","state":"idle"|"starting"|"showing"|"frozen"|"error"|"unsupported",
  *                    "target","page","reason","hide_bmw_guidance","guide_disabled","cluster","hud",
- *                    "hud_state","hud_width_pct","hud_x","hud_y","hud_keep_shown"}
- *                   (hud_keep_shown 0|1, absent from a tool before it)
+ *                    "hud_state","hud_width_pct","hud_x","hud_y","hud_keep_shown","fullscreen"}
+ *                   (hud_keep_shown 0|1, absent from a tool before it; fullscreen 0|1, achieved
+ *                    - 1 only while the map covers the whole cluster -, absent from a tool before it)
  *                   (unsupported: the head unit refuses the tool, which stays idle)
  *                   (idle's reason: why a live stream shows no map; hide_bmw_guidance 0|1,
  *                    absent from a tool before the switch; guide_disabled 1: the cluster
@@ -26,7 +27,7 @@
  *
  *   Patch daemon socket (PATCH_PATH; root helper, group tm_oap_app)
  *     app    -> daemon  {"cmd":"status"}
- *                       {"cmd":"apply","panel":"high","mode":"avb"}
+ *                       {"cmd":"apply","panel":"high"|"mid","mode":"avb"}
  *                       {"cmd":"revert"}
  *                       {"cmd":"aa-apply"} | {"cmd":"aa-revert"}
  *                       {"cmd":"aa-density","value":n} | {"cmd":"aa-card","value":"shown"|"hidden"}
@@ -34,7 +35,11 @@
  *                        Android Auto's, with a normal head-unit restart
  *     daemon -> app     {"ev":"status","state":"original"|"patched"|"unknown"|
  *                        "busy"|"error","panel":"high"|"mid"|null,"mode","res","safe",
- *                        "carplay","reason","pending","conflict","recovered","busy","restart","aa","wifi"}
+ *                        "carplay","reason","pending","conflict","recovered","busy","restart","aa","wifi",
+ *                        "panel_wanted":"high"|"mid"}
+ *                       panel_wanted: the panel the Patch button applies for the
+ *                        map settings in effect (mid while the cluster map is
+ *                        fullscreen; absent from a daemon before it: high)
  *                       res "WxH" and safe "WxH+X+Y": the advertised size and
  *                       its safe area (a daemon before the safe area omits safe)
  *                       carplay "deferred": the patch is written but takes effect
@@ -75,6 +80,9 @@
  * whether or not this app is open; its status says which. CarPlay's Patch button applies
  * the one patch configuration (high panel, the resolution SIZE the render
  * displays with its guidance safe area SAFE, the stock media-bus sink), and
+ * while the cluster map is fullscreen the mid panel instead (the whole
+ * cluster's stock geometry: patchd's panel_wanted, which also moves an
+ * applied patch to it when fullscreen changes), and
  * Remove patch reverts it, which is what turns the map off. Installing the tool
  * writes the same patch, which takes effect at the next head-unit start. The
  * patch daemon is a new root service that may not be running until then, so
@@ -344,25 +352,32 @@ function shownOnOf(rs) {
     return cluster && hud ? 'both' : cluster ? 'cluster' : hud ? 'hud' : 'off';
 }
 
-/* The render's commands for map settings as patchd keeps them: a display
+/* The render's commands for map settings as patchd keeps them: fullscreen
+ * (from a patchd that has it) and a display
  * turned on first, so a switch from one display to the other never passes
  * through neither, then the HUD's size, place and whether it stays shown
  * over BMW's pop-ups (from a patchd that has it). */
 function renderCommands(s) {
     const on = (v) => (v ? '1' : '0');
     const shows = ['cluster', 'hud'].sort((a, b) => s[b] - s[a]);
+    /* fullscreen first, so a cluster turned on next starts on its target;
+     * an old patchd's settings lack the key: no command (an old render
+     * would warn on it) */
+    const first = s.fullscreen === 0 || s.fullscreen === 1 ? [{ cmd: 'fullscreen', on: on(s.fullscreen) }] : [];
     const hud = { cmd: 'hud', hud_width_pct: String(s.hud_width_pct), hud_x: String(s.hud_offset_x), hud_y: String(s.hud_offset_y) };
     if (s.hud_keep_shown === 0 || s.hud_keep_shown === 1) {
         hud.hud_keep_shown = on(s.hud_keep_shown);
     }
-    return shows.map((d) => ({ cmd: d, on: on(s[d]) })).concat([hud]);
+    return first.concat(shows.map((d) => ({ cmd: d, on: on(s[d]) }))).concat([hud]);
 }
 
 /* Whether the render's status shows map settings as patchd keeps them. */
 function renderShows(rs, s) {
     return rs.cluster === s.cluster && rs.hud === s.hud && rs.hud_width_pct === s.hud_width_pct &&
         rs.hud_x === s.hud_offset_x && rs.hud_y === s.hud_offset_y &&
-        (!(s.hud_keep_shown === 0 || s.hud_keep_shown === 1) || rs.hud_keep_shown === undefined || rs.hud_keep_shown === s.hud_keep_shown);
+        (!(s.hud_keep_shown === 0 || s.hud_keep_shown === 1) || rs.hud_keep_shown === undefined || rs.hud_keep_shown === s.hud_keep_shown) &&
+        (!(s.fullscreen === 0 || s.fullscreen === 1) || rs.fullscreen === undefined || s.cluster !== 1 ||
+            rs.fullscreen === s.fullscreen);
 }
 
 /* After a zoom or turn-card value that waits for the next head-unit start. */
@@ -563,7 +578,7 @@ class WazeClusterControl extends EventEmitter {
         if (this.canEnable()) {
             this._lastPatchCmd = 'apply';
             /* The stock media-bus sink: the capture path the render joins. */
-            this.patch.send({ cmd: 'apply', panel: 'high', mode: 'avb' });
+            this.patch.send({ cmd: 'apply', panel: this._panelWanted(this.patchStatus), mode: 'avb' });
         }
     }
 
@@ -778,6 +793,31 @@ class WazeClusterControl extends EventEmitter {
         }
     }
 
+    /* ---- the cluster map over the whole cluster ---- */
+    /* True while the map covers the whole cluster (achieved: the render's
+     * status says so), false while it is in its map slot; null while the
+     * render has not said, or is an older one without it. */
+    fullscreenOn() {
+        if (this._loading()) {
+            return null;
+        }
+        const v = this.renderStatus && this.renderStatus.fullscreen;
+        return v === 0 || v === 1 ? v === 1 : null;
+    }
+    /* While the map is on the cluster and the render knows the setting. */
+    canChooseFullscreen() {
+        return this.canChooseShownOn() && this.clusterOn() === true && this.fullscreenOn() !== null;
+    }
+    /* Flips it: the render at once, patchd saves it; the tick follows the
+     * render's status, which says fullscreen only once the map covers the
+     * whole cluster. */
+    toggleFullscreen() {
+        if (this.canChooseFullscreen()) {
+            const full = !this.fullscreenOn();
+            this._write([[{ cmd: 'fullscreen', on: full ? '1' : '0' }, { cmd: 'fullscreen', on: full ? 1 : 0 }]]);
+        }
+    }
+
     hudPositionText() {
         const at = this.hudOffset();
         if (!at) {
@@ -904,8 +944,18 @@ class WazeClusterControl extends EventEmitter {
      * panel, size or safe area, from an older app, or the cluster map URL without
      * the arrival-time card. */
     _outdated(ps) {
+        if (this._panelWanted(ps) === 'mid') {
+            /* fullscreen: the whole cluster's stock geometry */
+            return !!((ps.mode && ps.mode !== 'avb') || (ps.panel && ps.panel !== 'mid') || ps.mapurl === 'no-eta');
+        }
         return !!((ps.mode && ps.mode !== 'avb') || (ps.panel && ps.panel !== 'high') ||
             (ps.res && ps.res !== SIZE) || (ps.safe && ps.safe !== SAFE) || ps.mapurl === 'no-eta');
+    }
+
+    /* The panel CarPlay's patch is for: patchd's panel_wanted (mid while the
+     * cluster map is fullscreen), high from a daemon before it. */
+    _panelWanted(ps) {
+        return ps && ps.panel_wanted === 'mid' ? 'mid' : 'high';
     }
 
     /* ---- BMW's turn box ---- */
@@ -1306,7 +1356,7 @@ class WazeClusterControl extends EventEmitter {
             this._noteCardAsked(msg);
             this._wake();
             this.emit('change');
-        } else if (/^(cluster|hud|hud-size|hud-pos|hud-keep-shown)-reply$/.test(msg.ev)) {
+        } else if (/^(cluster|hud|hud-size|hud-pos|hud-keep-shown|fullscreen)-reply$/.test(msg.ev)) {
             if (!msg.ok) {
                 this._log.info(`patchd did not save the setting: ${msg.reason || 'refused'}`);
             }

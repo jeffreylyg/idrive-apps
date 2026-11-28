@@ -55,21 +55,31 @@
  *                  {"cmd":"hud-size","hud_width_pct":0|20..100}   (over 85 saved as 85)
  *                  {"cmd":"hud-pos","hud_x":-800..800,"hud_y":-800..800}
  *                  {"cmd":"hud-keep-shown","on":0|1}
+ *                  {"cmd":"fullscreen","on":0|1}
  *                                   the map on the cluster on or off, on the HUD on
  *                                   or off, the HUD's size
  *                                   (0: the default box), where it is moved from
- *                                   the centre (HUD pixels) and whether it stays
- *                                   shown over BMW's pop-ups, saved for the render's
+ *                                   the centre (HUD pixels), whether it stays
+ *                                   shown over BMW's pop-ups and whether the
+ *                                   cluster map covers the whole cluster, saved
+ *                                   for the render's
  *                                   next start as "cluster", "hud", "hud_width_pct",
- *                                   "hud_offset_x", "hud_offset_y" and
- *                                   "hud_keep_shown" in MAP_STATE
+ *                                   "hud_offset_x", "hud_offset_y",
+ *                                   "hud_keep_shown" and "fullscreen" in MAP_STATE
  *                                   (the app changes the running render itself).
  *                                   Changes are written together MAP_SAVE_MS
  *                                   after the last one; the reply (cluster-reply,
  *                                   hud-reply, hud-size-reply, hud-pos-reply,
- *                                   hud-keep-shown-reply)
+ *                                   hud-keep-shown-reply, fullscreen-reply)
  *                                   follows the write and carries ok, the values
  *                                   saved, reason and the settings in effect.
+ *                                   fullscreen also moves CarPlay's patch: an
+ *                                   enabled plan made for the other panel is
+ *                                   planned again for the one it wants
+ *                                   (followPanel: mid while fullscreen, high
+ *                                   otherwise), carplay restarted where it can
+ *                                   be; a driver profile that changes it does
+ *                                   the same.
  *                                   With "profile":"<id>"|null and "own":0|1
  *                                   (the driver profile and set the app's page
  *                                   showed), each is saved only while that
@@ -95,7 +105,10 @@
  *                                   (capture-reply to the asker; every client gets
  *                                   ev capture, also once a second)
  *   patchd -> app  {"ev":"status","state":...,"panel":...,"mode":...,"res":...,"safe":...,"reason":...,"carplay":...,
- *                   "pending":...,"conflict":...,"removable":...,"busy":...,"restart":...,"aa":...}
+ *                   "pending":...,"conflict":...,"removable":...,"busy":...,"restart":...,"aa":...,
+ *                   "panel_wanted":"high"|"mid"}
+ *                    panel_wanted: the panel CarPlay's Patch button applies for
+ *                    the map settings in effect (wantedPanel)
  *                    state: original | patched | unknown | busy | error
  *                    removable: Remove patch would change carplay now (a
  *                    patch of ours on disk, waiting for a restart or not);
@@ -265,12 +278,13 @@ var REBOOT_WAIT_MS = parseInt(process.env.WOC_REBOOT_WAIT_MS, 10) || 180000;
  * later versions do not read it. It stays on the unit for a downgrade, kept
  * one every release starts with (moveMapSettings, moveFeatures). */
 var LOCAL_CONF = process.env.WOC_LOCAL_CONF || '/var/opt/waze-on-cluster/waze-on-cluster.local.conf';
-/* Where the map shows and the HUD map's size, place and whether it stays
+/* Where the map shows (the whole cluster or the map slot included) and the
+ * HUD map's size, place and whether it stays
  * shown over BMW's pop-ups, as the app chose them: the render reads this file (its map_state_file) over its
  * configuration. Not in LOCAL_CONF, which waze-on-cluster 0.8 refuses to
  * start with any of MAP_KEYS in. */
 var MAP_STATE = path.join(STATE_DIR, 'map.state.conf');
-var MAP_KEYS = ['cluster', 'hud', 'hud_width_pct', 'hud_offset_x', 'hud_offset_y', 'hud_keep_shown'];
+var MAP_KEYS = ['cluster', 'hud', 'hud_width_pct', 'hud_offset_x', 'hud_offset_y', 'hud_keep_shown', 'fullscreen'];
 /* The opt-in settings: the render reads this file (its features_file) over
  * its configuration. Not in LOCAL_CONF, which every release up to 0.10.7
  * refuses to start with any of FEATURE_KEYS in; no release before 0.10.9
@@ -443,7 +457,7 @@ function saveLater(settings, withProfiles) {
 var PROFILES_FILE = path.join(STATE_DIR, 'profiles.json');
 var PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+={}-]{0,127}$/;
 var MAX_OWN = 16;
-var MAP_DEFAULTS = { cluster: 1, hud: 0, hud_width_pct: 0, hud_offset_x: 0, hud_offset_y: 0, hud_keep_shown: 0 };
+var MAP_DEFAULTS = { cluster: 1, hud: 0, hud_width_pct: 0, hud_offset_x: 0, hud_offset_y: 0, hud_keep_shown: 0, fullscreen: 0 };
 var profiles = null;          /* PROFILES_FILE as read at the start, and changed since */
 var currentProfile;           /* the profile the app last told (null: none; undefined: not told since the start) */
 var restored = false;         /* MAP_STATE written from PROFILES_FILE at the start, not yet told to the app */
@@ -458,13 +472,14 @@ function profilesKept(p) { return profilesInUse(p) || !!p.shared; }
 /* The settings in effect as PROFILES_FILE keeps them. */
 function profileEntry(p) { return p.active ? p.own[p.active] : p.shared; }
 /* Settings as PROFILES_FILE holds them, or null when any key is missing or
- * out of range; hud_keep_shown missing (a set saved before it) is its default. */
+ * out of range; hud_keep_shown or fullscreen missing (a set saved before
+ * them) is its default. */
 function profileSettings(o) {
     if (!o || typeof o !== 'object') return null;
     var s = {};
     for (var i = 0; i < MAP_KEYS.length; i++) {
         var k = MAP_KEYS[i];
-        var v = typeof o[k] === 'number' ? String(o[k]) : k === 'hud_keep_shown' && !(k in o) ? String(MAP_DEFAULTS[k]) : null;
+        var v = typeof o[k] === 'number' ? String(o[k]) : (k === 'hud_keep_shown' || k === 'fullscreen') && !(k in o) ? String(MAP_DEFAULTS[k]) : null;
         if (v === null || !mapValueOk(k, v)) return null;
         s[k] = Number(v);
     }
@@ -479,6 +494,45 @@ function mapSettingsNow() {
     return s;
 }
 function sameSettings(a, b) { return MAP_KEYS.every(function (k) { return a[k] === b[k]; }); }
+
+/* The panel CarPlay's patch advertises for the map settings in effect: the
+ * central map area's 1088x480 (high, as upstream) unless the cluster map is
+ * fullscreen, then the whole cluster's stock 1920x720 (mid), so the phone
+ * lays its map out for all of it. The phone takes its geometry at
+ * connection: a change takes a CarPlay restart. */
+function wantedPanel() { return mapSettingsNow().fullscreen === 1 ? 'mid' : 'high'; }
+
+/* The panel and capture mode an enabled plan of CarPlay's was made with,
+ * or null without one. */
+function plannedPanel() {
+    var r = inmem.readRecord('carplay');
+    if (!r || r.enabled !== true || !Array.isArray(r.args)) return null;
+    var i = r.args.indexOf('--panel');
+    var mode = r.args.indexOf('--sink') >= 0 ? 'udp' : r.args.indexOf('--capture') >= 0 ? 'fifo' : 'avb';
+    return { panel: i >= 0 ? r.args[i + 1] : null, mode: mode };
+}
+
+/* CarPlay's patch planned again for the panel the settings in effect want
+ * (wantedPanel), when an enabled plan was made for the other one, as its
+ * Patch button would (carplay restarted where it can be, else at the next
+ * head-unit start); the capture mode kept. While an operation or a restart
+ * runs, once it ends. Nothing without an enabled plan, on a head unit that
+ * refuses the patch, or while patchd quits. */
+var followDue = false;
+function followPanel(why) {
+    if (quitting) return;
+    if (busy || rebooting) { followDue = true; return; }
+    followDue = false;
+    var p = plannedPanel(), want = wantedPanel();
+    if (!p || p.panel === want || headUnit.refused()) { status(); return; }
+    log((why || 'the map settings') + ': CarPlay\'s patch planned again for the ' + want + ' panel (' +
+        (want === 'mid' ? 'the whole cluster, 1920x720' : 'the central map area, 1088x480') + ')');
+    operate('carplay', 'applying', function (cb) {
+        inmemApply(CP, planArgs(want, p.mode), false, function (e, r, a, conflict, why2) {
+            cb(e || (conflict || why2 ? new Error(conflict || why2) : null), r, a);
+        });
+    });
+}
 function readProfiles() {
     var p = { shared: null, own: Object.create(null), active: null }, j = null;
     try { j = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8')); } catch (e) {
@@ -587,7 +641,8 @@ function profileCmd(msg, sock) {
     }
     reply(sock, { ev: ev, ok: true, id: id, own: !!target, changed: changed || restored, settings: want, own_settings: ownSettings() });
     restored = false;
-    if (profilesInUse(p) !== inUse) status();
+    if (changed && want.fullscreen !== now.fullscreen) followPanel('driver profile ' + profileTag(id) + ': the cluster map fullscreen ' + (want.fullscreen ? 'on' : 'off'));
+    else if (profilesInUse(p) !== inUse) status();
 }
 
 /* The map settings the app writes. A write names the driver profile its
@@ -598,7 +653,7 @@ function profileCmd(msg, sock) {
  * null. A write without "profile" (an app before it, or one while no
  * driver has own settings) is saved only while no driver has own settings:
  * the shared settings are then the only ones. */
-var MAP_CMDS = ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown'];
+var MAP_CMDS = ['cluster', 'hud', 'hud-size', 'hud-pos', 'hud-keep-shown', 'fullscreen'];
 function ownSettings() { return !!profiles && profilesInUse(profiles); }
 function mapWriteRefusal(msg) {
     if (!('profile' in msg)) return ownSettings() ? 'drivers have their own map settings: update Maps on cluster' : null;
@@ -1192,6 +1247,7 @@ function status(extra, aaExtra, opts) {
             if (aaExtra) Object.keys(aaExtra).forEach(function (k) { msg.aa[k] = aaExtra[k]; });
             msg.wifi = wifi ? wifi.current() : null;
             msg.own_settings = ownSettings();
+            msg.panel_wanted = wantedPanel();
             if (sock) reply(sock, msg); else send(msg);
         }, fresh);
     }, fresh);
@@ -2139,8 +2195,10 @@ function inmemHook(which, cb) {
          * enabled plan was made with), with this version's edits. Any build
          * whose sites the patcher finds and verifies is planned, on trial
          * until it ran healthy on this car. */
-        var keep = rec && rec.enabled === true && Array.isArray(rec.args) && rec.args.length ? rec.args : null;
-        inmemApply(CP, keep || planArgs('high', 'avb'), true, function (err, roErr, activation, conflict2, why) {
+        var keep = rec && rec.enabled === true && Array.isArray(rec.args) && rec.args.length ? rec.args.slice() : null;
+        /* its panel the one the map settings want (wantedPanel) */
+        if (keep && keep.indexOf('--panel') >= 0) keep[keep.indexOf('--panel') + 1] = wantedPanel();
+        inmemApply(CP, keep || planArgs(wantedPanel(), 'avb'), true, function (err, roErr, activation, conflict2, why) {
             if (roErr) log('WARNING: ' + roErr.message + ' — the next head-unit start mounts / read-only again');
             if (conflict2) { out(0, 'carplay left as it is: ' + conflict2, conflict2); return; }
             if (err) { out(1, 'applying the map patch failed: ' + err.message); return; }
@@ -2400,6 +2458,7 @@ function rebootCmd(sock) {
         try { fs.unlinkSync(RESTART_FILE); } catch (e) {}
         log('reboot failed: ' + why);
         send({ ev: 'reboot-reply', ok: false, reason: why });
+        if (followDue) setImmediate(followPanel);
         status();
     }
     var timer = setTimeout(function () { failed('stayed', 'the head unit did not restart'); }, REBOOT_WAIT_MS);
@@ -2445,6 +2504,7 @@ function operate(target, label, fn) {
                 else status(activation ? { carplay: activation } : {}, null, { fresh: true });
             }
             quitWhenIdle();
+            if (followDue) setImmediate(followPanel);
         });
     });
 }
@@ -2550,6 +2610,12 @@ function handle(line, sock) {
     if (msg.cmd === 'hud-keep-shown') {
         if (msg.on !== 0 && msg.on !== 1) { reply(sock, { ev: 'hud-keep-shown-reply', ok: false, reason: 'on must be 0 or 1' }); return; }
         saveMapSettings(sock, 'hud-keep-shown-reply', { hud_keep_shown: msg.on }, 'the HUD map over pop-ups');
+        return;
+    }
+    if (msg.cmd === 'fullscreen') {
+        if (msg.on !== 0 && msg.on !== 1) { reply(sock, { ev: 'fullscreen-reply', ok: false, reason: 'on must be 0 or 1' }); return; }
+        saveMapSettings(sock, 'fullscreen-reply', { fullscreen: msg.on }, 'the cluster map fullscreen');
+        followPanel('the cluster map fullscreen ' + (msg.on ? 'on' : 'off'));
         return;
     }
     /* The driver profile and its own settings: not operations on carplay either. */

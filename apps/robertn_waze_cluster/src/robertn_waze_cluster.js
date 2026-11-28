@@ -7,7 +7,10 @@
  *
  * The main page, one LT_State_Wide list in four sections, each under a
  * header row: General, HUD, CarPlay, Android Auto, then the restart's two
- * rows. General: Show on (a drop-down of Cluster, HUD, both and Off), the Own
+ * rows. General: Show on (a drop-down of Cluster, HUD, both and Off), the
+ * Cluster fullscreen checkbox (the map over the whole cluster, covering the
+ * gauges; greyed while the map is off the cluster or the render is an older
+ * one, and ticked only once the render says the map covers it), the Own
  * settings for this driver checkbox (profile_sync.js; greyed while no driver
  * profile is detected), Cluster map (the shared render's map), the Hide
  * BMW's turn box checkbox (the render's setting; a press asks the render to
@@ -97,6 +100,7 @@ const HEAD_HUD_NAME = 'wocHeadHud';
 const HUD_NAME = 'wocHud';
 const HUD_KEEP_NAME = 'wocHudKeep';
 const SHOW_ON_NAME = 'wocShowOn';
+const FULLSCREEN_NAME = 'wocFullscreen';
 const PROFILE_NAME = 'wocProfile';
 const PROFILE_STATUS_NAME = 'wocProfileStatus';
 const HUD_SIZE_NAME = 'wocHudSize';
@@ -220,7 +224,7 @@ class WazeClusterApp extends OnlineApp {
         }
         const names = [STATUS_NAME, MAP_NAME, RESTART_STATUS_NAME, ENABLE_NAME, DISABLE_NAME, WIFI_NAME, WIFI_HINT_NAME, AA_STATUS_NAME,
             AA_ENABLE_NAME, AA_DISABLE_NAME, AA_ZOOM_NAME, AA_ZOOM_OUT_NAME, AA_ZOOM_IN_NAME, AA_CARD_NAME, RESTART_NAME, GUIDE_NAME,
-            HEAD_GENERAL_NAME, HEAD_HUD_NAME, SHOW_ON_NAME, PROFILE_NAME, PROFILE_STATUS_NAME, HUD_NAME, HUD_KEEP_NAME, HUD_SIZE_NAME, HUD_POS_NAME]
+            HEAD_GENERAL_NAME, HEAD_HUD_NAME, SHOW_ON_NAME, FULLSCREEN_NAME, PROFILE_NAME, PROFILE_STATUS_NAME, HUD_NAME, HUD_KEEP_NAME, HUD_SIZE_NAME, HUD_POS_NAME]
             .concat(Object.values(HUD_MOVE_NAMES), [HUD_CENTRE_NAME, CAPTURE_NAME, CAPTURE_STATUS,
                 LOGS_NAME, LOGS_SAVE, LOGS_STATUS, LOGS_QR, LOGS_URL], LOGS_ROW_NAMES);
         names.forEach((name) => { this._components[name] = rhmi.getByName(name); });
@@ -250,6 +254,13 @@ class WazeClusterApp extends OnlineApp {
             /* as for the turn box: the render's answer decides the tick */
             delete this._written[`selected:${HUD_KEEP_NAME}`];
             this._control.toggleHudKeep();
+            this._render();
+        });
+        this._bind(FULLSCREEN_NAME, () => {
+            /* as for the turn box: the render's answer decides the tick,
+             * which comes only once the map covers the whole cluster */
+            delete this._written[`selected:${FULLSCREEN_NAME}`];
+            this._control.toggleFullscreen();
             this._render();
         });
         this._bind(PROFILE_NAME, () => {
@@ -575,6 +586,10 @@ class WazeClusterApp extends OnlineApp {
             this._writeCell(SHOW_ON_NAME, 'ItemText', row === 0 && shownOn < 0 ? '—' : text, 'Text', row));
         this._writeCell(SHOW_ON_NAME, 'SelectedItem', Math.max(shownOn, 0), 'UInt');
         this._setEnabled(SHOW_ON_NAME, c.canChooseShownOn());
+        /* the whole cluster: ticked only once the render says the map covers it */
+        this._write(FULLSCREEN_NAME, t('Cluster fullscreen'));
+        this._setSelected(FULLSCREEN_NAME, c.fullscreenOn() === true);
+        this._setEnabled(FULLSCREEN_NAME, c.canChooseFullscreen());
         const profiles = this._profiles;
         this._write(PROFILE_NAME, t('Own settings for this driver'));
         this._setSelected(PROFILE_NAME, profiles.ownShown());

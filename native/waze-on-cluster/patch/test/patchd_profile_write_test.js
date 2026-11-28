@@ -118,8 +118,9 @@ function state() {
     return s;
 }
 function profiles() { return JSON.parse(fs.readFileSync(PROFILES, 'utf8')); }
-function settings(cluster, hud, pct, x, y, keep) {
-    return { cluster: cluster, hud: hud, hud_width_pct: pct, hud_offset_x: x, hud_offset_y: y, hud_keep_shown: keep || 0 };
+function settings(cluster, hud, pct, x, y, keep, full) {
+    return { cluster: cluster, hud: hud, hud_width_pct: pct, hud_offset_x: x, hud_offset_y: y, hud_keep_shown: keep || 0,
+        fullscreen: full || 0 };
 }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 /* map.state.conf's settings, in whatever order its lines are */
@@ -223,6 +224,15 @@ function threeSets(active) {
             return pf.own[A].hud_keep_shown === 1 && pf.own[B].hud_keep_shown === 0 && same(pf.shared, SHARED) && pf.active === B &&
                 sameKeys(state(), pf.own[B]);
         }), JSON.stringify(profiles()));
+    r = await ask({ cmd: 'fullscreen', on: 1, profile: B, own: 1 });
+    ok('fullscreen as B\'s own: in B\'s copy and map.state.conf, A\'s and the shared settings untouched', r.ok && await when(function () {
+        pf = profiles();
+        return pf.own[B].fullscreen === 1 && pf.own[A].fullscreen === 0 && pf.shared.fullscreen === 0 && state().fullscreen === 1;
+    }), JSON.stringify(profiles()));
+    r = await ask({ cmd: 'fullscreen', on: 0, profile: B, own: 1 });
+    ok('the map slot again as B\'s own: replaced', r.ok && await when(function () {
+        return profiles().own[B].fullscreen === 0 && state().fullscreen === 0;
+    }), JSON.stringify(profiles()));
 
     /* The guest profile: a profile like any other, on the shared settings. */
     r = await ask({ cmd: 'profile', id: GUEST });

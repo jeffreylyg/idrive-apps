@@ -13,8 +13,8 @@
 
 namespace woc {
 
-const char *const kMapStateKeys[6] = {"cluster",      "hud",          "hud_width_pct",
-                                      "hud_offset_x", "hud_offset_y", "hud_keep_shown"};
+const char *const kMapStateKeys[7] = {"cluster",      "hud",          "hud_width_pct", "hud_offset_x",
+                                      "hud_offset_y", "hud_keep_shown", "fullscreen"};
 
 namespace {
 

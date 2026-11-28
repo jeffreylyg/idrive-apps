@@ -190,7 +190,14 @@ upload budget is cluster-render's: set it with `upload_kb_per_s` in
 "Upload budget").
 
 The map covers the cluster's central map area, 1088x480 on the 1920x720
-panel. The patch advertises exactly that, so `tex_size` must equal it.
+panel. The patch's high panel advertises exactly that, so `tex_size` must
+equal it. While the cluster map is fullscreen, patchd plans the mid panel
+instead, the whole cluster's 1920x720 with BMW's safe area: the phone lays
+its map out for all of it, and those pictures are decoded at their own size
+(`wide_size`) and shown whole at 1920x720 (`fullscreen_full_res`), so a
+fullscreen frame costs up to about 2.65 times the upload of the slot's.
+Until CarPlay restarts after fullscreen goes off, the map slot shows their
+`wide_crop` (the central map area's place, 1:1).
 `src_crop` takes part of a picture of one size and scales it to `tex_size`
 (Android Auto's 1280x720 stream has its map in the top 1280x564).
 `map_rect` draws the map stretched into a rect of the map slot.

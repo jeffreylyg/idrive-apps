@@ -460,6 +460,7 @@ void VideoProducer::on_nal(const uint8_t *data, size_t len, bool end_of_au)
 
 bool VideoProducer::start_decoder(std::string *err)
 {
+    decoder_.set_wide(cfg_.wide_width, cfg_.wide_height);
     if (!decoder_.init(cfg_.drm_device.c_str(), cfg_.tex_width, cfg_.tex_height, cfg_.tex_level_bits, cfg_.gpu_copy, err,
                        cfg_.src_crop)) {
         std::lock_guard<std::mutex> flock(frame_mutex_);
@@ -551,8 +552,10 @@ void VideoProducer::set_part(const OutputPart &p)
 
 void VideoProducer::on_frame(const VideoFrame &f, bool late)
 {
-    /* a part (hosted_vpp_scale) is the frame's picture as much as the whole */
-    const bool sized = f.part.set() || (f.w == cfg_.tex_width && f.h == cfg_.tex_height);
+    /* a part (hosted_vpp_scale) is the frame's picture as much as the whole,
+     * and so is a wide frame (the whole cluster's layout, decoded 1:1) */
+    const bool wide = cfg_.wide_width && f.w == cfg_.wide_width && f.h == cfg_.wide_height;
+    const bool sized = f.part.set() || wide || (f.w == cfg_.tex_width && f.h == cfg_.tex_height);
     if (!f.atlas && !f.same) {
         std::string line;
         {
@@ -569,7 +572,7 @@ void VideoProducer::on_frame(const VideoFrame &f, bool late)
         return;
     }
     ChangeSampler *change = &change_;
-    if (f.part.set()) {
+    if (f.part.set() || wide) {   /* sampled at its own size */
         if (!part_change_ || part_change_w_ != f.w || part_change_h_ != f.h) {
             part_change_.reset(new ChangeSampler(f.w, f.h));
             part_change_w_ = f.w;
@@ -618,16 +621,22 @@ void VideoProducer::on_frame(const VideoFrame &f, bool late)
     queue_log(false, std::move(health_line));
 }
 
-bool VideoProducer::take(std::vector<uint8_t> *frame, uint64_t *id, bool *same, OutputPart *part)
+bool VideoProducer::take(std::vector<uint8_t> *frame, uint64_t *id, bool *same, OutputPart *part, uint32_t *w,
+                         uint32_t *h)
 {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     *same = !back_dirty_;
-    if (back_dirty_ && (back_part_.set() || (back_w_ == cfg_.tex_width && back_h_ == cfg_.tex_height)))
+    const bool wide = cfg_.wide_width && back_w_ == cfg_.wide_width && back_h_ == cfg_.wide_height;
+    if (back_dirty_ && (back_part_.set() || wide || (back_w_ == cfg_.tex_width && back_h_ == cfg_.tex_height)))
         frame->swap(back_);
     else if (!repeat_)
         return false;
     if (part)
         *part = back_part_;
+    if (w)
+        *w = back_w_;
+    if (h)
+        *h = back_h_;
     *id = back_id_;
     back_dirty_ = repeat_ = false;
     char drain[8];

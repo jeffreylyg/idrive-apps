@@ -183,8 +183,15 @@ value to one shared OTHER table value, with slot 7 holding that OTHER value
 (stock) or slot 9's or 10's (patched). The stock and patched slot values are
 read from the table itself.
 
-The app applies IC_HIGH; IC_MID (`--panel mid`) keeps its stock 1920x720
-geometry.
+In this fork the app applies IC_HIGH, as upstream, unless the cluster map
+is fullscreen: then `patchd` plans IC_MID (`--panel mid`), which keeps its
+stock 1920x720 geometry and BMW's safe area, so the phone lays its map out
+for the whole cluster, which the render shows whole (waze-on-cluster.conf
+`wide_size`). A change of the setting, or of the driver profile, plans an
+enabled patch again for the panel it wants (`followPanel`), carplay
+restarted where it can be; its status names that panel (`panel_wanted`),
+which the app's Patch button applies. A fresh install plans it too; boot
+recovery plans IC_HIGH. IC_MID on a KI_KOMBI_VARIANT 7 car is CAR-ONLY.
 
 ## Edit 2 — sink (where the stream goes)
 

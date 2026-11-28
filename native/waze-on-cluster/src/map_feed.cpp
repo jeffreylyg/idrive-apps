@@ -38,8 +38,10 @@ const char *const kNotTaken = "the cluster renderer does not take it";
 }  // namespace
 
 MapFeed::MapFeed(const FeedConfig &cfg)
-    : cfg_(cfg), client_("waze-on-cluster", cfg.socket), placed_x_(cfg.hud_offset_x), placed_y_(cfg.hud_offset_y)
+    : cfg_(cfg), src_w_(cfg.video.w), src_h_(cfg.video.h), client_("waze-on-cluster", cfg.socket),
+      placed_x_(cfg.hud_offset_x), placed_y_(cfg.hud_offset_y)
 {
+    held_at_once_ = cfg.show_held_at_once;
     client_.on_ready = [this] {
         connected_ = true;
         /* The layer is made again on this connection, so only a refusal on it
@@ -105,10 +107,12 @@ void MapFeed::make_layer()
     part_ = OutputPart();
     uint32_t tw = 0, th = 0;
     if (!target_size(client_.targets, cfg_.target, &tw, &th)) {
+        target_absent_ = true;
         refused_ = "the cluster renderer has no target " + cfg_.target;
         log_error("render: %s", refused_.c_str());
         return;
     }
+    target_absent_ = false;
     show_due_ = false;
     refused_.clear();
     layer_state_ = "stalled";
@@ -133,6 +137,8 @@ void MapFeed::make_layer()
     cr::VideoOptions vo = cfg_.video;
     scaling_ = false;
     const uint32_t sw = q.w & ~3u, sh = q.h & ~3u;
+    const bool wide = wide_source();
+    const MapRect mp = map_part();
     if (hosted()) {
         /* Hosted: the part of the picture the host's src covers where the
          * map would be (q), where that part lands in the host's rect,
@@ -154,19 +160,34 @@ void MapFeed::make_layer()
         vo.h = dh;
         scaling_ = true;
         shape_ = ScaleShape();
-        shape_.w = cfg_.video.w;
-        shape_.h = cfg_.video.h;
+        shape_.w = src_w_;
+        shape_.h = src_h_;
         shape_.dw = dw;
         shape_.dh = dh;
-        shape_.crop_x = crop.x;
-        shape_.crop_y = crop.y;
+        shape_.crop_x = mp.x + crop.x;   /* the host's part of the map, in the picture */
+        shape_.crop_y = mp.y + crop.y;
         shape_.crop_w = crop.w;
         shape_.crop_h = crop.h;
         shape_.level_bits = cfg_.video.level_bits;
-        if (cfg_.vpp_scale)
+        if (cfg_.vpp_scale && !wide)
             part_ = OutputPart{crop.x, crop.y, crop.w, crop.h, dw, dh};
         log_info("render: hosted on %s: the map's %ux%u at %u,%u, as %ux%u%s", host_.into.c_str(), crop.w,
                  crop.h, crop.x, crop.y, dw, dh, part_.set() ? ", made by VPP (hosted_vpp_scale)" : "");
+    } else if (wide && cfg_.target == "panel") {
+        /* fullscreen: the whole wide picture, at its own size, or scaled to
+         * the map's frame (the KOMBI's GPU scales it back up) */
+        if (cfg_.fullscreen_full_res) {
+            vo.w = src_w_;
+            vo.h = src_h_;
+        } else {
+            scaling_ = true;
+            shape_ = ScaleShape();
+            shape_.w = src_w_;
+            shape_.h = src_h_;
+            shape_.dw = cfg_.video.w;
+            shape_.dh = cfg_.video.h;
+            shape_.level_bits = cfg_.video.level_bits;
+        }
     } else if (cfg_.target == "hud" && cfg_.scale_down && (sw < cfg_.video.w || sh < cfg_.video.h) && sw >= 64 &&
                sh >= 32 && sw <= cfg_.video.w && sh <= cfg_.video.h) {
         q.x += (q.w - sw) / 2;
@@ -177,13 +198,33 @@ void MapFeed::make_layer()
         vo.h = sh;
         scaling_ = true;
         shape_ = ScaleShape();
-        shape_.w = cfg_.video.w;
-        shape_.h = cfg_.video.h;
+        shape_.w = src_w_;
+        shape_.h = src_h_;
+        if (wide) {
+            shape_.crop_x = mp.x;
+            shape_.crop_y = mp.y;
+            shape_.crop_w = mp.w;
+            shape_.crop_h = mp.h;
+        }
         shape_.dw = sw;
         shape_.dh = sh;
         shape_.level_bits = cfg_.scaled_level_bits;
         shape_.radius = cfg_.hud_round_corners ? (sh / 12 > 6 ? sh / 12 : 6) : 0;
         shape_.black = cfg_.hud_black_background;
+    } else if (wide) {
+        /* the map slot (or the HUD unscaled): the map's part of the wide
+         * picture, cut out 1:1 */
+        scaling_ = true;
+        shape_ = ScaleShape();
+        shape_.w = src_w_;
+        shape_.h = src_h_;
+        shape_.crop_x = mp.x;
+        shape_.crop_y = mp.y;
+        shape_.crop_w = mp.w;
+        shape_.crop_h = mp.h;
+        shape_.dw = cfg_.video.w;
+        shape_.dh = cfg_.video.h;
+        shape_.level_bits = cfg_.video.level_bits;
     }
     /* a VPP-made picture is of no use to a layer of another part, or none */
     if (held_part_.set() && held_part_ != part_) {
@@ -222,11 +263,57 @@ void MapFeed::make_layer()
     layer_ = client_.video(lo_, vo);
     if (hosted())
         target_size(client_.targets, host_.into, &tw, &th);
-    log_info("render: map layer on %s (%ux%u), quad %ux%u at %u,%u%s%s", lo_.target.c_str(), tw, th, q.w, q.h, q.x, q.y,
+    char from[64] = "";
+    if (wide)
+        std::snprintf(from, sizeof from, ", from %ux%u pictures%s", src_w_, src_h_,
+                      cfg_.target == "panel" && !hosted() ? " (the whole cluster's layout)" : "");
+    log_info("render: map layer on %s (%ux%u), quad %ux%u at %u,%u, %ux%u frames%s%s%s", lo_.target.c_str(), tw, th,
+             q.w, q.h, q.x, q.y, vo.w, vo.h, from,
              part_.set() ? ", the part made to it by VPP on the GPU"
              : scaling_  ? ", the frame scaled to it on the head unit"
                          : "",
              vo.always_packed ? ", every update packed (always_packed)" : "");
+    make_holes(tw, th);
+    /* A fullscreen switch's first layer: the picture it was handed goes now
+     * (FeedConfig::show_held_at_once); a layer that scales sends it from
+     * poll. */
+    if (held_at_once_) {
+        held_at_once_ = false;
+        if (lo_.visible && held_new_ && !scaling_ && !unseen())
+            send_newest();
+    }
+}
+
+MapRect MapFeed::map_part() const
+{
+    const uint32_t w = cfg_.video.w, h = cfg_.video.h;
+    if (!wide_source() || src_w_ < w || src_h_ < h)
+        return MapRect{0, 0, src_w_, src_h_};
+    const MapRect &c = cfg_.wide_crop;
+    if (c.set() && c.w == w && c.h == h && c.fits(src_w_, src_h_) && !(c.x % 2) && !(c.y % 2))
+        return c;
+    return MapRect{((src_w_ - w) / 2) & ~1u, ((src_h_ - h) / 2) & ~1u, w, h};
+}
+
+void MapFeed::set_source(uint32_t w, uint32_t h)
+{
+    if (!w || !h || (w == src_w_ && h == src_h_))
+        return;
+    src_w_ = w;
+    src_h_ = h;
+    log_info("render: the phone's pictures are %ux%u%s", w, h,
+             wide_source() ? ", the whole cluster's layout" : ", the map's frame");
+    /* nothing of the old size goes to the new layer: its first frame is the
+     * next picture */
+    held_.clear();
+    held_new_ = elsewhere_ = in_worker_ = false;
+    held_part_ = OutputPart();
+    part_ = OutputPart();
+    if (layer_) {
+        drop_layer();
+        if (client_.connected())
+            make_layer();
+    }
 }
 
 void MapFeed::fall_back(const std::string &why)
@@ -255,19 +342,119 @@ void MapFeed::remake_layer()
 {
     if (layer_) {
         keep_newest();
-        client_.drop(layer_);
-        layer_ = 0;
+        drop_layer();
     }
     if (client_.connected())
         make_layer();
 }
 
+void MapFeed::drop_layer()
+{
+    drop_holes();
+    client_.drop(layer_);
+    layer_ = 0;
+}
+
+namespace {
+
+/* The map's colour and alpha taken away where the mask is 1. */
+const char *const kHolesFs =
+    "precision mediump float;\n"
+    "varying vec2 v_uv;\n"
+    "uniform sampler2D u_mask;\n"
+    "void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, texture2D(u_mask, v_uv).r); }\n";
+
+}  // namespace
+
+void MapFeed::make_holes(uint32_t tw, uint32_t th)
+{
+    drop_holes();
+    if (cfg_.target != "panel" || hosted() || cfg_.holes.empty() || !layer_)
+        return;
+    const char *why = !client_.takes_render_state() ? "the cluster renderer does not take render_state" : nullptr;
+    if (why != holes_why_ && why)
+        log_warn("render: fullscreen_holes: %s: the map covers the gauges whole", why);
+    holes_why_ = why;
+    if (why)
+        return;
+    if (holes_asset_ && (holes_w_ != tw || holes_h_ != th)) {
+        client_.drop(holes_asset_);
+        holes_asset_ = 0;
+    }
+    if (!holes_asset_) {
+        cr::AssetOptions ao;
+        ao.target = cfg_.target;
+        ao.r8 = true;
+        ao.w = tw / 2;
+        ao.h = th / 2;
+        ao.bilinear = true;
+        holes_asset_ = client_.asset(ao);
+        const std::vector<uint8_t> mask = hole_mask(cfg_.holes, (float)cfg_.hole_feather, tw, th);
+        if (!holes_asset_ || !client_.pixels(holes_asset_, {}, mask.data(), mask.size())) {
+            log_error("render: fullscreen_holes: the %ux%u mask was not taken", ao.w, ao.h);
+            holes_asset_ = 0;
+            return;
+        }
+        holes_w_ = tw;
+        holes_h_ = th;
+        size_t n = 0;
+        for (uint8_t b : mask)
+            n += b >= 128;
+        log_info("render: fullscreen_holes: %zu shapes, %u%% of the panel see-through, edges faded over %u px",
+                 cfg_.holes.size(), (unsigned)(n * 100 / (mask.empty() ? 1 : mask.size())), cfg_.hole_feather);
+    }
+    holes_lo_ = cr::LayerOptions();
+    holes_lo_.target = cfg_.target;
+    holes_lo_.klass = "content";
+    holes_lo_.z = lo_.z + 1;   /* just over the map */
+    holes_lo_.visible = lo_.visible;
+    cr::EffectOptions eo;
+    eo.fs = kHolesFs;
+    /* colour and alpha both times one minus the mask: see-through there */
+    cr::RenderState look;
+    look.blend_src = "zero";
+    look.blend_dst = "one_minus_src_alpha";
+    look.blend_src_alpha = "zero";
+    look.blend_dst_alpha = "one_minus_src_alpha";
+    holes_layer_ = client_.effect(holes_lo_, eo, false, look);
+    if (holes_layer_)
+        client_.bind(holes_layer_, "u_mask", holes_asset_);
+}
+
+void MapFeed::drop_holes()
+{
+    if (holes_layer_)
+        client_.drop(holes_layer_);
+    holes_layer_ = 0;
+}
+
+void MapFeed::show_holes()
+{
+    if (holes_layer_ && holes_lo_.visible != lo_.visible) {
+        holes_lo_.visible = lo_.visible;
+        client_.set(holes_layer_, holes_lo_);
+    }
+}
+
 /* Where the map goes on a target of tw x th: the kit's fitted rect, or on
  * the HUD with a size set, that width (the picture's shape kept, at most the
  * HUD's height), centred; on the HUD then moved by the offset, held inside
- * the scene. */
+ * the scene. On `panel` (fullscreen) the whole scene, or the picture's shape
+ * fitted to its height, centred; the KOMBI's GPU scales it either way. */
 crk::QuadRect MapFeed::quad(uint32_t tw, uint32_t th) const
 {
+    if (cfg_.target == "panel" && src_w_ && src_h_) {
+        if (cfg_.fullscreen_stretch)
+            return crk::QuadRect{0, 0, tw, th};
+        /* the picture's shape: the map's frame, or a wide picture's whole */
+        uint64_t w = ((uint64_t)th * src_w_ + src_h_ / 2) / src_h_;
+        uint64_t h = th;
+        if (w > tw) {   /* a picture wider than the scene: fitted to its width */
+            w = tw;
+            h = ((uint64_t)tw * src_h_ + src_w_ / 2) / src_w_;
+        }
+        return crk::QuadRect{(uint32_t)((tw - w) / 2), (uint32_t)((th - h) / 2), (uint32_t)w, (uint32_t)h};
+    }
     if (cfg_.target != "hud" || !cfg_.video.w || !cfg_.video.h)
         return crk::map_quad(tw, th, cfg_.video.w, cfg_.video.h);
     crk::QuadRect q;
@@ -616,6 +803,7 @@ void MapFeed::show_when_sent()
     show_due_ = false;
     lo_.visible = true;
     client_.set(layer_, lo_);
+    show_holes();
 }
 
 void MapFeed::set_stream(bool live, bool frozen, Picture picture)
@@ -644,6 +832,7 @@ void MapFeed::set_stream(bool live, bool frozen, Picture picture)
     } else if (lo_.visible) {
         lo_.visible = false;
         client_.set(layer_, lo_);
+        show_holes();
     }
 }
 

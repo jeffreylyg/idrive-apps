@@ -188,6 +188,14 @@ public:
      * part". */
     void set_part(const OutputPart &p);
 
+    /* A sequence whose pictures are exactly w x h (after the crop, when it
+     * applies) comes out at that size instead of the output size: the
+     * phone's map laid out for the whole cluster (a fork's fullscreen,
+     * CarPlay's IC_MID 1920x720), decoded 1:1 for the map feeds to crop
+     * and show. 0 x 0: none (as it always was). Even sizes; kept across
+     * init(), taken at the next sequence. */
+    void set_wide(uint32_t w, uint32_t h);
+
     /* Gives the newest frame that came out, when it came out without a
      * picture (feed's picture false), its picture now, through cb as feed()
      * would: while its surface still holds it (the decoder has not taken
@@ -226,6 +234,7 @@ private:
     std::unique_ptr<State> s_;
     SpsSink sps_sink_;
     OutputPart part_;
+    uint32_t wide_w_ = 0, wide_h_ = 0;
 };
 
 }  // namespace woc

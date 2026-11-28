@@ -96,6 +96,10 @@ struct VideoConfig {
     std::string drm_device;         /* MSDK VAAPI device, e.g. /dev/dri/renderD128 */
     uint32_t tex_width = 1088;      /* decode target: the map area's size, which the patch */
     uint32_t tex_height = 480;      /* advertises to the phone */
+    /* A stream of exactly this size (the phone's layout for the whole
+     * cluster, CarPlay's IC_MID) is decoded at it instead, 1:1, and its
+     * frames come out at it (Decoder::set_wide); 0 x 0: none. */
+    uint32_t wide_width = 0, wide_height = 0;
     SourceCrop src_crop;            /* the part of a picture of its size that is the map */
     /* Low bits of each Y, U and V level rounded away in the decoder's
      * packing (round_levels, yuv_atlas.h): at 2 a byte is at most 2 levels
@@ -128,8 +132,10 @@ public:
     /* The newest decoded frame not yet taken, swapped into *frame (its
      * buffer comes back for the next one), or with *same the picture last
      * taken again (*frame untouched); false when there is none. With part,
-     * the part of the frame it is (set_part; unset: the whole frame). */
-    bool take(std::vector<uint8_t> *frame, uint64_t *id, bool *same, OutputPart *part = nullptr);
+     * the part of the frame it is (set_part; unset: the whole frame). With
+     * w and h, the frame's size: tex_size, the wide size, or the part's. */
+    bool take(std::vector<uint8_t> *frame, uint64_t *id, bool *same, OutputPart *part = nullptr, uint32_t *w = nullptr,
+              uint32_t *h = nullptr);
     /* hosted_vpp_scale: the frames from the next picture on are this part
      * of the frame, at its size, made by VPP (Decoder::set_part), as far as
      * VPP can; unset: the whole frame. Main thread. */

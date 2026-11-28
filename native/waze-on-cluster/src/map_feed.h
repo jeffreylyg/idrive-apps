@@ -75,7 +75,27 @@
  * written ahead of it, unless the target waits on the layer meanwhile
  * (cluster-render PROTOCOL.md "fresh_ms"); with a renderer that does not
  * take fresh_ms, a layer is never unseen. A layer the stream hides is not
- * unseen: its frames go nowhere, as above. */
+ * unseen: its frames go nowhere, as above.
+ *
+ * Wide pictures: a phone told the whole cluster's geometry (the patch's
+ * IC_MID, 1920x720) lays its map out for all of it, and the decoder hands
+ * those pictures over at their own size (VideoProducer's wide_width), so
+ * the pictures are larger than the map's frame (set_source). On `panel`
+ * (fullscreen) the layer shows the whole picture: at its own size, or
+ * scaled to the map's frame (FeedConfig::fullscreen_full_res). Everywhere
+ * else the map is the picture's wide_crop (the map's frame's size, around
+ * the phone's safe area), cut out 1:1 by the scaling worker for the map
+ * slot, and scaled from there for the HUD or a host; VPP never makes a part
+ * of a wide picture. A new size makes the layer again; no picture of the
+ * old size goes to it.
+ *
+ * Holes (map_holes.h): on `panel`, not hosted, the shapes of
+ * FeedConfig::holes are see-through, so the cluster's own gauges under the
+ * panel show there. An effect layer just above the map samples their mask
+ * (one asset, made once and kept, half the panel's size) and takes that much
+ * of the map's colour and alpha away; it is shown and hidden with the map's
+ * layer and goes with it. A renderer whose hello has no render_state gets
+ * no holes (its effect would draw them black), with one warning. */
 #ifndef WOC_MAP_FEED_H
 #define WOC_MAP_FEED_H
 
@@ -89,6 +109,7 @@
 #include "freeze_watch.h"
 #include "map_rect.h"
 #include "map_geometry.h"
+#include "map_holes.h"
 
 namespace woc {
 
@@ -102,6 +123,26 @@ struct FeedConfig {
     cr::VideoOptions video;   /* w and h are the decoded frame's */
     MapRect rect;             /* where in the target; unset: the map area */
     bool guide_hold = true;   /* the layer's guide_hold: BMW's turn box hidden while the map shows */
+    /* On `panel` (the cluster map fullscreen, MapFeeds): 1 the map stretched
+     * over the whole scene; 0 fitted to its height, centred. */
+    bool fullscreen_stretch = false;
+    /* A wide picture (the header's "Wide pictures"): the part of it that is
+     * the map, of video.w x video.h; unset, or not of that size inside the
+     * picture: the picture's centre. */
+    MapRect wide_crop;
+    /* A wide picture on `panel`: 1 sent at its own size; 0 scaled to video.w
+     * x video.h, which the KOMBI's GPU scales back up (the upload of the
+     * map's frame, softer). */
+    bool fullscreen_full_res = true;
+    /* A feed made by a fullscreen switch (MapFeeds): its first layer shows
+     * the picture it was handed (hold) at once, not with the phone's next
+     * frame, which a still map may not send for seconds. Its later layers,
+     * and every other feed's, wait for the next frame, as before. */
+    bool show_held_at_once = false;
+    /* On `panel`: see-through shapes (map_holes.h) and how far their edges
+     * fade, in panel pixels. */
+    std::vector<Hole> holes;
+    unsigned hole_feather = 12;
     /* On the HUD: the map's width in percent of the HUD's (its height follows
      * the picture's shape, at most the HUD's), centred. 0: the kit's fitted
      * box (about 57 %). */
@@ -153,6 +194,7 @@ struct FeedStatus {
     unsigned hud_width_pct = 0;   /* the HUD map's size setting (0: the default) */
     int hud_offset_x = 0, hud_offset_y = 0;   /* and where it is moved to from the centre */
     bool hud_keep_shown = false;   /* the HUD map kept shown over the stock HMI's pop-ups */
+    bool fullscreen = false;   /* the cluster map over the whole cluster, achieved (MapFeeds) */
 };
 
 /* Whether a status is worth a log line: its state, reason or target differs
@@ -194,6 +236,15 @@ public:
     /* The layer's guide_hold from now on. */
     void set_guide_hold(bool hold);
     const std::string &target() const { return cfg_.target; }
+    /* The size of the pictures offered from now on (offer, hold, repeat):
+     * the decoded frame's (FeedConfig::video), or a wide picture's (the
+     * header's "Wide pictures"). A new size makes the layer again for it,
+     * and a picture of the old size held for it is dropped. */
+    void set_source(uint32_t w, uint32_t h);
+    uint32_t source_w() const { return src_w_; }
+    uint32_t source_h() const { return src_h_; }
+    /* The renderer's hello has no cfg_.target (make_layer refused on it). */
+    bool target_absent() const { return target_absent_; }
     /* The HUD map's size (FeedConfig::hud_width_pct), applied at once to a
      * map on the HUD. */
     void set_hud_width(unsigned pct);
@@ -280,6 +331,17 @@ public:
 
 private:
     void make_layer();
+    /* The holes' effect layer over the map on the panel (the header's
+     * "Holes"), made with the map's layer, shown with it, dropped with it. */
+    void make_holes(uint32_t tw, uint32_t th);
+    void drop_holes();
+    void show_holes();
+    /* The map's layer dropped, and the holes' with it. */
+    void drop_layer();
+    /* The pictures are larger than the map's frame (set_source). */
+    bool wide_source() const { return src_w_ != cfg_.video.w || src_h_ != cfg_.video.h; }
+    /* The map's part of a picture: all of it, or a wide picture's wide_crop. */
+    MapRect map_part() const;
     /* The host of the feed's target from now on (into empty: none): the
      * layer made again where it goes, or none while hidden. */
     void set_host(const cr::Host &h);
@@ -315,6 +377,7 @@ private:
     int64_t keep_every_ms() const;
 
     FeedConfig cfg_;
+    uint32_t src_w_, src_h_;   /* the pictures' size (set_source) */
     cr::Client client_;
     cr::Host host_;   /* the feed's target's host, from the renderer's events */
     bool host_unusable_ = false;
@@ -327,6 +390,11 @@ private:
     void remake_layer();
     uint32_t layer_ = 0;
     cr::LayerOptions lo_;   /* the layer's options as last sent */
+    uint32_t holes_layer_ = 0, holes_asset_ = 0;   /* the holes' effect layer and mask */
+    cr::LayerOptions holes_lo_;
+    uint32_t holes_w_ = 0, holes_h_ = 0;           /* the panel size the mask was made for */
+    const char *holes_why_ = nullptr;              /* why no holes, as last logged */
+    bool held_at_once_ = false;                    /* FeedConfig::show_held_at_once, until the first layer */
     bool show_due_ = false;   /* visible once the frame waiting has gone */
     /* The newest frame, while held_new_; on a layer that scales, once there
      * is one, unless another feed or the worker has it. */
@@ -344,6 +412,7 @@ private:
     mutable int placed_x_ = 0, placed_y_ = 0;
     unsigned cap_kb_ = 0, max_kb_ = 0;
     std::string budget_reason_, refused_, report_;
+    bool target_absent_ = false;   /* the hello had no cfg_.target */
     bool connected_ = false, status_asked_ = false;
     /* Unreachable this long (it starts with the first client): an error. */
     static const int64_t kUnreachableMs = 15000;

@@ -251,6 +251,48 @@ int main()
         expect(count("init 1280x720") == 1 && count("vpp-init 0,0,1280,564") == 1, "android auto set up for its rect");
     }
     {
+        /* set_wide: a sequence of exactly the wide size (CarPlay's IC_MID,
+         * the whole cluster's layout) comes out at it, 1:1; Android Auto's
+         * crop, a stock 1920x900 and the map slot's 1088x480 at the output
+         * size, as always; and the wide one again at its size. */
+        Run r(kAndroidAutoCrop);
+        r.dec.set_wide(1920, 720);
+        r.ow = 1920;
+        r.oh = 720;
+        r.sequence("1920x720", 2, 10);
+        r.ow = 1088;
+        r.oh = 480;
+        r.sequence(kAndroidAuto, 2, 20);
+        r.sequence("1920x900", 2, 30);
+        r.sequence(kCarPlay, 2, 40);
+        r.ow = 1920;
+        r.oh = 720;
+        r.sequence("1920x720", 1, 50);
+        expect(r.pictures == std::vector<uint8_t>({10, 11, 20, 21, 30, 31, 40, 41, 50}), "wide: every picture");
+        expect(count("vpp 0,0,1920,720") == 3 && count("vpp 0,0,1280,564") == 2 && count("vpp 0,0,1920,900") == 2,
+               "wide: the whole 1920x720 to VPP, android auto cropped, the 1920x900 whole");
+        Run off(kAndroidAutoCrop);
+        off.dec.set_wide(1920, 721);   /* odd: refused, none */
+        off.sequence("1920x720", 1, 60);
+        expect(off.pictures == std::vector<uint8_t>({60}), "an odd wide size: none, the output size");
+        /* A part asked for (hosted_vpp_scale): a wide sequence stays whole,
+         * VPP never reset for it; the map slot's sequence after it gets it. */
+        Run p("");
+        const OutputPart part{24, 0, 1040, 480, 936, 432};
+        p.dec.set_wide(1920, 720);
+        p.dec.set_part(part);
+        p.ow = 1920;
+        p.oh = 720;
+        p.sequence("1920x720", 2, 70);
+        expect(count_prefix("vpp-reset") == 0 && count("vpp 0,0,1920,720") == 2, "wide with a part: whole");
+        p.part = part;
+        p.ow = 936;
+        p.oh = 432;
+        p.sequence(kCarPlay, 1, 80);
+        expect(count("vpp-reset 24,0,1040,480 936x432") == 1 && p.pictures == std::vector<uint8_t>({70, 71, 80}),
+               "the map slot's sequence after it: the part");
+    }
+    {
         /* Pictures equal to the one before: VPP's last output is what they
          * are compared with (a frame without a picture has none), an SPS that
          * keeps the sequence keeps it, and a new sequence starts afresh. */

@@ -12,8 +12,13 @@
  * local conf into the state file (one there already kept, one out of range
  * dropped), the local conf's other lines kept, once: the local conf is then
  * one waze-on-cluster 0.8.7, the version "Undo update" goes back to,
- * starts with. */
+ * starts with. CarPlay's patch follows fullscreen: each status names the
+ * panel its Patch button applies (high in the map slot, as upstream; mid
+ * fullscreen); a change of fullscreen plans an enabled plan made for the
+ * other panel again, its capture mode kept, and nothing without a plan,
+ * with one turned off, or with one on the wanted panel already. */
 'use strict';
+require('./head_unit_env.js');   /* a HIGH head unit: CarPlay's patch is not refused */
 var assert = require('assert');
 var cp = require('child_process');
 var fs = require('fs');
@@ -77,6 +82,25 @@ var p = start();
 
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+/* patchd's status, asked on a fresh connection. */
+function statusOf() {
+    return new Promise(function (resolve, reject) {
+        var s = net.connect(SOCK), buf = '';
+        s.setEncoding('utf8');
+        s.on('connect', function () { s.write(JSON.stringify({ cmd: 'status' }) + '\n'); });
+        s.on('data', function (d) {
+            buf += d;
+            buf.split('\n').forEach(function (l) {
+                var m = null;
+                try { m = JSON.parse(l); } catch (e) {}
+                if (m && m.ev === 'status') { s.end(); resolve(m); }
+            });
+        });
+        s.on('error', reject);
+        setTimeout(function () { reject(new Error('no status')); }, 5000);
+    });
+}
+
 /* One request on a fresh connection; resolves to the first reply. */
 function ask(obj) {
     return new Promise(function (resolve, reject) {
@@ -88,7 +112,7 @@ function ask(obj) {
             buf.split('\n').forEach(function (l) {
                 var m = null;
                 try { m = JSON.parse(l); } catch (e) {}
-                if (m && /^(cluster|hud|hud-size|hud-pos|hud-keep-shown)-reply$/.test(m.ev)) { s.end(); resolve(m); }
+                if (m && /^(cluster|hud|hud-size|hud-pos|hud-keep-shown|fullscreen)-reply$/.test(m.ev)) { s.end(); resolve(m); }
             });
         });
         s.on('error', reject);
@@ -150,6 +174,39 @@ function ok(name, cond) {
     state = fs.readFileSync(STATE, 'utf8');
     r = await ask({ cmd: 'hud-keep-shown', on: '1' });
     ok('a keep-shown that is not 0 or 1 is refused, nothing written', !r.ok && fs.readFileSync(STATE, 'utf8') === state);
+    r = await ask({ cmd: 'fullscreen', on: 1 });
+    ok('the cluster map fullscreen is saved next to them', r.ok && r.fullscreen === 1 &&
+        /fullscreen = 1\n$/.test(fs.readFileSync(STATE, 'utf8')));
+    r = await ask({ cmd: 'fullscreen', on: 0 });
+    ok('the map slot again replaces it', r.ok && r.fullscreen === 0 && /fullscreen = 0\n$/.test(fs.readFileSync(STATE, 'utf8')));
+    state = fs.readFileSync(STATE, 'utf8');
+    r = await ask({ cmd: 'fullscreen', on: 2 });
+    ok('a fullscreen that is not 0 or 1 is refused, nothing written', !r.ok && fs.readFileSync(STATE, 'utf8') === state);
+    /* CarPlay's patch follows fullscreen. */
+    var st = await statusOf();
+    ok('status: the Patch button\'s panel the central map area\'s (high) in the map slot', st.panel_wanted === 'high');
+    var follows = function () { return out.split('CarPlay\'s patch planned again').length - 1; };
+    var f0 = follows();
+    await ask({ cmd: 'fullscreen', on: 1 });
+    st = await statusOf();
+    ok('fullscreen: the whole cluster\'s (mid); no plan of ours: nothing planned', st.panel_wanted === 'mid' && follows() === f0);
+    var REC = path.join(dir, 'inmem-carplay.json');
+    fs.writeFileSync(REC, JSON.stringify({ v: 3, enabled: false, args: ['--panel', 'high', '--coding', 'x'] }));
+    await ask({ cmd: 'fullscreen', on: 0 });
+    await ask({ cmd: 'fullscreen', on: 1 });
+    ok('a plan turned off: nothing planned', follows() === f0);
+    fs.writeFileSync(REC, JSON.stringify({ v: 3, enabled: true, args: ['--panel', 'mid', '--coding', 'x', '--sink', 'udp://x'] }));
+    await ask({ cmd: 'fullscreen', on: 1 });
+    ok('an enabled plan on the wanted panel already: nothing planned', follows() === f0);
+    await ask({ cmd: 'fullscreen', on: 0 });
+    for (t = 0; t < 2000 && follows() === f0; t += 50) await sleep(50);
+    ok('fullscreen off, an enabled plan for mid: planned again for the high panel, as its Patch button would',
+       follows() === f0 + 1 && /fullscreen off: CarPlay's patch planned again for the high panel/.test(out));
+    for (t = 0; t < 5000 && !/applying (done|failed)/.test(out); t += 50) await sleep(50);
+    st = await statusOf();
+    ok('the apply ran and ended (no carplay here), patchd idle again', /applying (done|failed)/.test(out) && !st.busy);
+    try { fs.unlinkSync(REC); } catch (e) {}
+    state = fs.readFileSync(STATE, 'utf8');
     ok('the local conf untouched by every setting', fs.readFileSync(CONF, 'utf8') === conf);
     /* A burst: one write SAVE_MS after the last change, every reply after it. */
     var saves = function () { return out.split('(saved for the next start)').length - 1; };

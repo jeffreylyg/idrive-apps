@@ -86,6 +86,15 @@ const TEXTS = path.join(TREE, 'rhmiData', 'variantGroups', 'Common', 'texts');
 const readText = (name) => JSON.parse(fs.readFileSync(path.join(TEXTS, `${name}.json`), 'utf8'));
 const generated = locales.texts();
 const untranslated = [];
+/* Words translated only into the languages listed: this fork's own
+ * settings, in English and Simplified Chinese; elsewhere t() shows the
+ * English word. */
+const ONLY_IN = { 'Cluster fullscreen': ['zh-CN'] };
+Object.keys(ONLY_IN).forEach((k) => {
+    ok(used.has(k), `"${k}": a word the app shows`);
+    ONLY_IN[k].forEach((code) => ok(all.some((l) => l.code === code && Object.prototype.hasOwnProperty.call(l.words, k)),
+        `${code}.json: "${k}" is translated`));
+});
 all.forEach((l) => {
     const n = `${l.code}.json`;
     ok(Array.isArray(l.hmiLanguages) && l.hmiLanguages.length && l.hmiLanguages.every((h) => SDK_TEXTS[h]), `${n}: hmiLanguages`);
@@ -98,7 +107,8 @@ all.forEach((l) => {
         eq(l.words[k], l.words[k].normalize('NFC'), `${n}: "${k}" is NFC`);
     });
     eq(Object.keys(l.words).filter((k) => !used.has(k)), [], `${n}: translations of words the app does not show`);
-    const missing = Array.from(used).filter((k) => !Object.prototype.hasOwnProperty.call(l.words, k));
+    const missing = Array.from(used).filter((k) => !Object.prototype.hasOwnProperty.call(l.words, k) &&
+        (!ONLY_IN[k] || ONLY_IN[k].includes(l.code)));
     if (missing.length) {
         untranslated.push(`${n}: ${missing.length} of ${used.size} words without a translation`);
     }

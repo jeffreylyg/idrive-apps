@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+Cluster fullscreen, off by default: a new map setting (`fullscreen`,
+saved by the app like the others) moves the cluster map from its central
+map slot over the whole 1920x720 cluster. The gauges are covered while it
+is on; the telltales stay on top. The picture keeps its shape, fitted to
+the cluster's height and centred, or covers all of it with
+`fullscreen_stretch = 1` in the configuration. A cluster renderer without
+the whole-cluster target keeps the map in its slot. While fullscreen, a
+theme hosting the map is ignored, and whether BMW's turn box draws over
+the map is unverified.
+
+The phone's layout for the whole cluster while fullscreen: patchd plans
+CarPlay's patch for the cluster's own 1920x720 geometry (IC_MID) while the
+cluster map is fullscreen and for the central map area's 1088x480 (IC_HIGH,
+as before) otherwise, a change of the setting (or of the driver profile)
+planning an enabled patch again, CarPlay restarted where it can be; its
+status names the panel CarPlay's Patch button applies (`panel_wanted`).
+Such a 1920x720 map is decoded at that size (`wide_size`, empty to turn it
+off); fullscreen shows the whole picture over the whole cluster at
+1920x720, or scaled to 1088x480 with `fullscreen_full_res = 0`; until
+CarPlay restarts, the map slot, the HUD and a hosting theme show its
+`wide_crop`, the central map area's place, cut out 1:1. `hosted_vpp_scale`
+does not apply to these pictures. A fullscreen switch shows the newest
+picture on the new target at once instead of with the phone's next frame;
+everything else in the map slot is as before.
+
+`fullscreen_holes` (empty by default) makes parts of the fullscreen map
+see-through, so the cluster's own gauges under it show there: rectangles,
+ellipses and ring arcs in the panel's pixels, their edges faded over
+`fullscreen_hole_feather` pixels. It needs a cluster-render with
+render_state; the KOMBI showing the gauges through them is still to be
+seen on a car.
+
 ## 0.14.21
 
 The cluster and HUD map update with lower latency and less CPU and flash wear, and installing or updating patches runs faster and handles clock jumps more reliably.
